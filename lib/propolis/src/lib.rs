@@ -32,6 +32,7 @@ pub mod mmio;
 pub mod msr;
 pub mod pio;
 pub mod tasks;
+pub mod tracing_arc;
 pub mod util;
 pub mod vcpu;
 pub mod vmm;
