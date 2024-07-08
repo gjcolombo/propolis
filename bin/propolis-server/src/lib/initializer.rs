@@ -41,7 +41,7 @@ use slog::info;
 const MAX_ROM_SIZE: usize = 0x20_0000;
 
 fn get_spec_guest_ram_limits(spec: &InstanceSpecV0) -> (usize, usize) {
-    let memsize = spec.devices.board.memory_mb as usize * MB;
+    let memsize = spec.board.memory_mb as usize * MB;
     let lowmem = memsize.min(3 * GB);
     let highmem = memsize.saturating_sub(3 * GB);
     (lowmem, highmem)
@@ -60,7 +60,7 @@ pub fn build_instance(
         track_dirty: true,
     };
     let mut builder = Builder::new(name, create_opts)?
-        .max_cpus(spec.devices.board.cpus)?
+        .max_cpus(spec.board.cpus)?
         .add_mem_region(0, lowmem, "lowmem")?
         .add_rom_region(0x1_0000_0000 - MAX_ROM_SIZE, MAX_ROM_SIZE, "bootrom")?
         .add_mmio_region(0xc000_0000_usize, 0x2000_0000_usize, "dev32")?
@@ -188,7 +188,12 @@ impl<'a> MachineInitializer<'a> {
         event_handler: &Arc<dyn super::vm::guest_event::ChipsetEventHandler>,
     ) -> Result<RegisteredChipset, Error> {
         let mut pci_builder = pci::topology::Builder::new();
-        for (name, bridge) in &self.spec.devices.pci_pci_bridges {
+        for (name, bridge) in
+            self.spec.components.iter().filter_map(|(k, v)| match v {
+                instance_spec::v0::ComponentV0::PciPciBridge(b) => Some((k, b)),
+                _ => None,
+            })
+        {
             let desc = pci::topology::BridgeDescription::new(
                 pci::topology::LogicalBusId(bridge.downstream_bus),
                 bridge.pci_path.try_into().map_err(|e| {
@@ -206,7 +211,7 @@ impl<'a> MachineInitializer<'a> {
         let pci::topology::FinishedTopology { topology: pci_topology, bridges } =
             pci_builder.finish(self.machine)?;
 
-        match self.spec.devices.board.chipset {
+        match self.spec.board.chipset {
             instance_spec::components::board::Chipset::I440Fx(i440fx) => {
                 let power_ref = Arc::downgrade(event_handler);
                 let reset_ref = Arc::downgrade(event_handler);
@@ -292,7 +297,12 @@ impl<'a> MachineInitializer<'a> {
         use instance_spec::components::devices::SerialPortNumber;
 
         let mut com1 = None;
-        for (name, serial_spec) in &self.spec.devices.serial_ports {
+        for (name, serial_spec) in
+            self.spec.components.iter().filter_map(|(k, v)| match v {
+                instance_spec::v0::ComponentV0::SerialPort(p) => Some((k, p)),
+                _ => None,
+            })
+        {
             let (irq, port) = match serial_spec.num {
                 SerialPortNumber::Com1 => (ibmpc::IRQ_COM1, ibmpc::PORT_COM1),
                 SerialPortNumber::Com2 => (ibmpc::IRQ_COM2, ibmpc::PORT_COM2),
@@ -347,7 +357,13 @@ impl<'a> MachineInitializer<'a> {
         &mut self,
         virtual_machine: VirtualMachine,
     ) -> Result<(), anyhow::Error> {
-        if let Some(ref spec) = self.spec.devices.qemu_pvpanic {
+        let mut specs =
+            self.spec.components.iter().filter_map(|(k, v)| match v {
+                instance_spec::v0::ComponentV0::QemuPvpanic(p) => Some((k, p)),
+                _ => None,
+            });
+
+        if let Some((_, spec)) = specs.next() {
             if spec.enable_isa {
                 let pvpanic = QemuPvpanic::create(
                     self.log.new(slog::o!("dev" => "qemu-pvpanic")),
@@ -366,6 +382,12 @@ impl<'a> MachineInitializer<'a> {
                     )?;
                 }
             }
+        } else {
+            return Ok(());
+        }
+
+        if let Some(_) = specs.next() {
+            anyhow::bail!("spec contains multiple pvpanic devices");
         }
 
         Ok(())
@@ -373,12 +395,12 @@ impl<'a> MachineInitializer<'a> {
 
     async fn create_storage_backend_from_spec(
         &self,
-        backend_spec: &instance_spec::v0::StorageBackendV0,
+        component: &instance_spec::v0::ComponentV0,
         backend_name: &str,
         nexus_client: &Option<NexusClient>,
     ) -> Result<StorageBackendInstance, Error> {
-        match backend_spec {
-            instance_spec::v0::StorageBackendV0::Crucible(spec) => {
+        match component {
+            instance_spec::v0::ComponentV0::CrucibleBackend(spec) => {
                 info!(self.log, "Creating Crucible disk";
                       "backend_name" => backend_name);
 
@@ -415,7 +437,7 @@ impl<'a> MachineInitializer<'a> {
                 let crucible = Some((be.get_uuid().await?, be.clone()));
                 Ok(StorageBackendInstance { be, crucible })
             }
-            instance_spec::v0::StorageBackendV0::File(spec) => {
+            instance_spec::v0::ComponentV0::FileStorageBackend(spec) => {
                 info!(self.log, "Creating file disk backend";
                       "path" => &spec.path);
 
@@ -441,7 +463,7 @@ impl<'a> MachineInitializer<'a> {
 
                 Ok(StorageBackendInstance { be, crucible: None })
             }
-            instance_spec::v0::StorageBackendV0::Blob(spec) => {
+            instance_spec::v0::ComponentV0::BlobStorageBackend(spec) => {
                 let bytes = base64::Engine::decode(
                     &base64::engine::general_purpose::STANDARD,
                     &spec.base64,
@@ -473,6 +495,14 @@ impl<'a> MachineInitializer<'a> {
 
                 Ok(StorageBackendInstance { be, crucible: None })
             }
+            _ => Err(Error::new(
+                ErrorKind::InvalidInput,
+                format!(
+                    "Backend {} is a {}, not a storage backend",
+                    backend_name,
+                    component.kind()
+                ),
+            )),
         }
     }
 
@@ -491,7 +521,9 @@ impl<'a> MachineInitializer<'a> {
             Nvme,
         }
 
-        for (name, device_spec) in &self.spec.devices.storage_devices {
+        for (name, device_spec) in
+            self.spec.components.iter().filter(|(_, v)| v.is_storage_device())
+        {
             info!(
                 self.log,
                 "Creating storage device {} with properties {:?}",
@@ -500,20 +532,17 @@ impl<'a> MachineInitializer<'a> {
             );
 
             let (device_interface, backend_name, pci_path) = match device_spec {
-                instance_spec::v0::StorageDeviceV0::VirtioDisk(disk) => {
+                instance_spec::v0::ComponentV0::VirtioDisk(disk) => {
                     (DeviceInterface::Virtio, &disk.backend_name, disk.pci_path)
                 }
-                instance_spec::v0::StorageDeviceV0::NvmeDisk(disk) => {
+                instance_spec::v0::ComponentV0::NvmeDisk(disk) => {
                     (DeviceInterface::Nvme, &disk.backend_name, disk.pci_path)
                 }
+                _ => unreachable!("already filtered for storage devices"),
             };
 
-            let backend_spec = self
-                .spec
-                .backends
-                .storage_backends
-                .get(backend_name)
-                .ok_or_else(|| {
+            let backend_spec =
+                self.spec.components.get(backend_name).ok_or_else(|| {
                     Error::new(
                         ErrorKind::InvalidInput,
                         format!(
@@ -585,25 +614,28 @@ impl<'a> MachineInitializer<'a> {
         &mut self,
         chipset: &RegisteredChipset,
     ) -> Result<(), Error> {
-        for (name, vnic_spec) in &self.spec.devices.network_devices {
+        for (name, component) in
+            self.spec.components.iter().filter(|(_, v)| v.is_network_device())
+        {
             info!(self.log, "Creating vNIC {}", name);
-            let instance_spec::v0::NetworkDeviceV0::VirtioNic(vnic_spec) =
-                vnic_spec;
+            let instance_spec::v0::ComponentV0::VirtioNic(vnic_spec) =
+                component
+            else {
+                unreachable!("already filtered for network devices");
+            };
 
-            let backend_spec = self
-                .spec
-                .backends
-                .network_backends
-                .get(&vnic_spec.backend_name)
-                .ok_or_else(|| {
-                    Error::new(
-                        ErrorKind::InvalidInput,
-                        format!(
-                            "Backend {} not found for vNIC {}",
-                            vnic_spec.backend_name, name
-                        ),
-                    )
-                })?;
+            let backend_spec =
+                self.spec.components.get(&vnic_spec.backend_name).ok_or_else(
+                    || {
+                        Error::new(
+                            ErrorKind::InvalidInput,
+                            format!(
+                                "Backend {} not found for vNIC {}",
+                                vnic_spec.backend_name, name
+                            ),
+                        )
+                    },
+                )?;
             let bdf: pci::Bdf = vnic_spec.pci_path.try_into().map_err(|e| {
                 Error::new(
                     ErrorKind::InvalidInput,
@@ -612,15 +644,23 @@ impl<'a> MachineInitializer<'a> {
             })?;
 
             let vnic_name = match backend_spec {
-                instance_spec::v0::NetworkBackendV0::Virtio(spec) => {
-                    &spec.vnic_name
-                }
-                instance_spec::v0::NetworkBackendV0::Dlpi(_) => {
+                instance_spec::v0::ComponentV0::Virtio(spec) => &spec.vnic_name,
+                instance_spec::v0::ComponentV0::Dlpi(_) => {
                     return Err(Error::new(
                         ErrorKind::InvalidInput,
                         format!(
                             "Network backend must be virtio for vNIC {}",
                             name,
+                        ),
+                    ));
+                }
+                _ => {
+                    return Err(Error::new(
+                        ErrorKind::InvalidInput,
+                        format!(
+                            "Backend {} is a {}, not a network backend",
+                            name,
+                            backend_spec.kind(),
                         ),
                     ));
                 }

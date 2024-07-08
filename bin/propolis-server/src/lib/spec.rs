@@ -8,7 +8,14 @@ use std::str::FromStr;
 
 use crate::config;
 use propolis_api_types::instance_spec::{
-    components,
+    components::{
+        self,
+        backends::{
+            BlobStorageBackend, CrucibleStorageBackend, FileStorageBackend,
+            VirtioNetworkBackend,
+        },
+        devices::{NvmeDisk, PciPciBridge, QemuPvpanic, VirtioDisk, VirtioNic},
+    },
     v0::{
         builder::{SpecBuilder, SpecBuilderError},
         *,
@@ -97,35 +104,33 @@ fn pci_path_to_nic_names(path: PciPath) -> (String, String) {
 fn make_storage_backend_from_config(
     name: &str,
     backend: &config::BlockDevice,
-) -> Result<StorageBackendV0, ServerSpecBuilderError> {
+) -> Result<ComponentV0, ServerSpecBuilderError> {
     let backend_spec = match backend.bdtype.as_str() {
-        "file" => {
-            StorageBackendV0::File(components::backends::FileStorageBackend {
-                path: backend
-                    .options
-                    .get("path")
-                    .ok_or_else(|| {
-                        ServerSpecBuilderError::ConfigTomlError(format!(
-                            "Couldn't get path for file backend {}",
-                            name
-                        ))
-                    })?
-                    .as_str()
-                    .ok_or_else(|| {
-                        ServerSpecBuilderError::ConfigTomlError(format!(
-                            "Couldn't parse path for file backend {}",
-                            name
-                        ))
-                    })?
-                    .to_string(),
-                readonly: match backend.options.get("readonly") {
-                    Some(toml::Value::Boolean(ro)) => Some(*ro),
-                    Some(toml::Value::String(v)) => v.parse().ok(),
-                    _ => None,
-                }
-                .unwrap_or(false),
-            })
-        }
+        "file" => ComponentV0::FileStorageBackend(FileStorageBackend {
+            path: backend
+                .options
+                .get("path")
+                .ok_or_else(|| {
+                    ServerSpecBuilderError::ConfigTomlError(format!(
+                        "Couldn't get path for file backend {}",
+                        name
+                    ))
+                })?
+                .as_str()
+                .ok_or_else(|| {
+                    ServerSpecBuilderError::ConfigTomlError(format!(
+                        "Couldn't parse path for file backend {}",
+                        name
+                    ))
+                })?
+                .to_string(),
+            readonly: match backend.options.get("readonly") {
+                Some(toml::Value::Boolean(ro)) => Some(*ro),
+                Some(toml::Value::String(v)) => v.parse().ok(),
+                _ => None,
+            }
+            .unwrap_or(false),
+        }),
         _ => {
             return Err(ServerSpecBuilderError::UnrecognizedStorageBackend(
                 backend.bdtype.clone(),
@@ -139,7 +144,7 @@ fn make_storage_backend_from_config(
 fn make_storage_device_from_config(
     name: &str,
     device: &config::Device,
-) -> Result<StorageDeviceV0, ServerSpecBuilderError> {
+) -> Result<ComponentV0, ServerSpecBuilderError> {
     enum DeviceInterface {
         Virtio,
         Nvme,
@@ -183,16 +188,10 @@ fn make_storage_device_from_config(
 
     Ok(match interface {
         DeviceInterface::Virtio => {
-            StorageDeviceV0::VirtioDisk(components::devices::VirtioDisk {
-                backend_name,
-                pci_path,
-            })
+            ComponentV0::VirtioDisk(VirtioDisk { backend_name, pci_path })
         }
         DeviceInterface::Nvme => {
-            StorageDeviceV0::NvmeDisk(components::devices::NvmeDisk {
-                backend_name,
-                pci_path,
-            })
+            ComponentV0::NvmeDisk(NvmeDisk { backend_name, pci_path })
         }
     })
 }
@@ -222,12 +221,15 @@ impl ServerSpecBuilder {
                 },
             )?;
 
-        let mut builder =
-            SpecBuilder::new(properties.vcpus, properties.memory, enable_pcie);
+        let mut builder = SpecBuilder::new(properties.vcpus, properties.memory);
+        if enable_pcie {
+            builder.enable_pcie();
+        }
 
-        builder.add_pvpanic_device(components::devices::QemuPvpanic {
-            enable_isa: true,
-        })?;
+        builder.add_component(
+            "qemu_pvpanic".to_string(),
+            ComponentV0::QemuPvpanic(QemuPvpanic { enable_isa: true }),
+        )?;
 
         Ok(Self { builder })
     }
@@ -240,24 +242,17 @@ impl ServerSpecBuilder {
     ) -> Result<(), ServerSpecBuilderError> {
         let pci_path = slot_to_pci_path(nic.slot, SlotType::Nic)?;
         let (device_name, backend_name) = pci_path_to_nic_names(pci_path);
-        let device_spec =
-            NetworkDeviceV0::VirtioNic(components::devices::VirtioNic {
-                backend_name: backend_name.clone(),
-                pci_path,
-            });
+        let device_spec = ComponentV0::VirtioNic(VirtioNic {
+            backend_name: backend_name.clone(),
+            pci_path,
+        });
 
-        let backend_spec = NetworkBackendV0::Virtio(
-            components::backends::VirtioNetworkBackend {
-                vnic_name: nic.name.to_string(),
-            },
-        );
+        let backend_spec = ComponentV0::VionaBackend(VirtioNetworkBackend {
+            vnic_name: nic.name.to_string(),
+        });
 
-        self.builder.add_network_device(
-            device_name,
-            device_spec,
-            backend_name,
-            backend_spec,
-        )?;
+        self.builder.add_component(device_name, device_spec)?;
+        self.builder.add_component(backend_name, backend_spec)?;
 
         Ok(())
     }
@@ -271,8 +266,8 @@ impl ServerSpecBuilder {
         let pci_path = slot_to_pci_path(disk.slot, SlotType::Disk)?;
         let backend_name = disk.name.clone();
 
-        let backend_spec = StorageBackendV0::Crucible(
-            components::backends::CrucibleStorageBackend {
+        let backend_spec =
+            ComponentV0::CrucibleBackend(CrucibleStorageBackend {
                 request_json: serde_json::to_string(
                     &disk.volume_construction_request,
                 )
@@ -283,23 +278,18 @@ impl ServerSpecBuilder {
                     )
                 })?,
                 readonly: disk.read_only,
-            },
-        );
+            });
 
         let device_name = disk.name.clone();
         let device_spec = match disk.device.as_ref() {
-            "virtio" => {
-                StorageDeviceV0::VirtioDisk(components::devices::VirtioDisk {
-                    backend_name: disk.name.to_string(),
-                    pci_path,
-                })
-            }
-            "nvme" => {
-                StorageDeviceV0::NvmeDisk(components::devices::NvmeDisk {
-                    backend_name: disk.name.to_string(),
-                    pci_path,
-                })
-            }
+            "virtio" => ComponentV0::VirtioDisk(VirtioDisk {
+                backend_name: disk.name.to_string(),
+                pci_path,
+            }),
+            "nvme" => ComponentV0::NvmeDisk(NvmeDisk {
+                backend_name: disk.name.to_string(),
+                pci_path,
+            }),
             _ => {
                 return Err(ServerSpecBuilderError::UnrecognizedStorageDevice(
                     disk.device.clone(),
@@ -307,13 +297,8 @@ impl ServerSpecBuilder {
             }
         };
 
-        self.builder.add_storage_device(
-            device_name,
-            device_spec,
-            backend_name,
-            backend_spec,
-        )?;
-
+        self.builder.add_component(device_name, device_spec)?;
+        self.builder.add_component(backend_name, backend_spec)?;
         Ok(())
     }
 
@@ -327,25 +312,19 @@ impl ServerSpecBuilder {
         let pci_path = slot_to_pci_path(api::Slot(0), SlotType::CloudInit)?;
         let backend_name = name.to_string();
         let backend_spec =
-            StorageBackendV0::Blob(components::backends::BlobStorageBackend {
+            ComponentV0::BlobStorageBackend(BlobStorageBackend {
                 base64,
                 readonly: true,
             });
 
         let device_name = name.to_string();
-        let device_spec =
-            StorageDeviceV0::VirtioDisk(components::devices::VirtioDisk {
-                backend_name: name.to_string(),
-                pci_path,
-            });
+        let device_spec = ComponentV0::VirtioDisk(VirtioDisk {
+            backend_name: name.to_string(),
+            pci_path,
+        });
 
-        self.builder.add_storage_device(
-            device_name,
-            device_spec,
-            backend_name,
-            backend_spec,
-        )?;
-
+        self.builder.add_component(device_name, device_spec)?;
+        self.builder.add_component(backend_name, backend_spec)?;
         Ok(())
     }
 
@@ -369,25 +348,17 @@ impl ServerSpecBuilder {
         })?;
 
         let (device_name, backend_name) = pci_path_to_nic_names(pci_path);
-        let backend_spec = NetworkBackendV0::Virtio(
-            components::backends::VirtioNetworkBackend {
-                vnic_name: vnic_name.to_string(),
-            },
-        );
+        let backend_spec = ComponentV0::VionaBackend(VirtioNetworkBackend {
+            vnic_name: vnic_name.to_string(),
+        });
 
-        let device_spec =
-            NetworkDeviceV0::VirtioNic(components::devices::VirtioNic {
-                backend_name: backend_name.clone(),
-                pci_path,
-            });
+        let device_spec = ComponentV0::VirtioNic(VirtioNic {
+            backend_name: backend_name.clone(),
+            pci_path,
+        });
 
-        self.builder.add_network_device(
-            device_name,
-            device_spec,
-            backend_name,
-            backend_spec,
-        )?;
-
+        self.builder.add_component(device_name, device_spec)?;
+        self.builder.add_component(backend_name, backend_spec)?;
         Ok(())
     }
 
@@ -400,12 +371,12 @@ impl ServerSpecBuilder {
             ServerSpecBuilderError::PciPathNotParseable(bridge.pci_path.clone())
         })?;
 
-        self.builder.add_pci_bridge(
+        self.builder.add_component(
             name,
-            components::devices::PciPciBridge {
+            ComponentV0::PciPciBridge(PciPciBridge {
                 downstream_bus: bridge.downstream_bus,
                 pci_path,
-            },
+            }),
         )?;
 
         Ok(())
@@ -427,12 +398,13 @@ impl ServerSpecBuilder {
                         make_storage_device_from_config(device_name, device)?;
 
                     let backend_name = match &device_spec {
-                        StorageDeviceV0::VirtioDisk(disk) => {
+                        ComponentV0::VirtioDisk(disk) => {
                             disk.backend_name.clone()
                         }
-                        StorageDeviceV0::NvmeDisk(disk) => {
+                        ComponentV0::NvmeDisk(disk) => {
                             disk.backend_name.clone()
                         }
+                        _ => unreachable!("device must be a storage device"),
                     };
 
                     let backend_config = config
@@ -450,12 +422,9 @@ impl ServerSpecBuilder {
                         backend_config,
                     )?;
 
-                    self.builder.add_storage_device(
-                        device_name.clone(),
-                        device_spec,
-                        backend_name,
-                        backend_spec,
-                    )?;
+                    self.builder
+                        .add_component(device_name.clone(), device_spec)?;
+                    self.builder.add_component(backend_name, backend_spec)?;
                 }
                 "pci-virtio-viona" => {
                     self.add_network_device_from_config(device_name, device)?
@@ -497,6 +466,8 @@ impl ServerSpecBuilder {
         name: &str,
         device: &config::Device,
     ) -> Result<(), ServerSpecBuilderError> {
+        use propolis_api_types::instance_spec::components::devices::SoftNpuP9;
+
         let pci_path: PciPath = device.get("pci-path").ok_or_else(|| {
             ServerSpecBuilderError::ConfigTomlError(format!(
                 "Failed to get PCI path for storage device {}",
@@ -504,8 +475,11 @@ impl ServerSpecBuilder {
             ))
         })?;
 
-        self.builder
-            .set_softnpu_p9(components::devices::SoftNpuP9 { pci_path })?;
+        self.builder.add_component(
+            "softnpu_p9".to_string(),
+            ComponentV0::SoftNpuP9(SoftNpuP9 { pci_path }),
+        )?;
+
         Ok(())
     }
 

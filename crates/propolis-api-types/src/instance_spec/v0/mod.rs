@@ -76,6 +76,26 @@ pub enum ComponentV0 {
 }
 
 impl ComponentV0 {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            ComponentV0::VirtioDisk(_) => "VirtioDisk",
+            ComponentV0::NvmeDisk(_) => "NvmeDisk",
+            ComponentV0::VirtioNic(_) => "VirtioNic",
+            ComponentV0::SerialPort(_) => "SerialPort",
+            ComponentV0::PciPciBridge(_) => "PciPciBridge",
+            ComponentV0::QemuPvpanic(_) => "QemuPvpanic",
+            ComponentV0::SoftNpuPciPort(_) => "SoftNpuPciPort",
+            ComponentV0::SoftNpuPort(_) => "SoftNpuPort",
+            ComponentV0::SoftNpuP9(_) => "SoftNpuP9",
+            ComponentV0::P9fs(_) => "P9fs",
+            ComponentV0::CrucibleBackend(_) => "CrucibleBackend",
+            ComponentV0::FileStorageBackend(_) => "FileStorageBackend",
+            ComponentV0::BlobStorageBackend(_) => "BlobStorageBackend",
+            ComponentV0::VionaBackend(_) => "VionaBackend",
+            ComponentV0::DlpiBackend(_) => "DlpiBackend",
+        }
+    }
+
     /// Returns the PCI BDF where this component should be attached, or `None`
     /// if the component is not a PCI device.
     pub fn pci_path(&self) -> Option<PciPath> {
@@ -90,27 +110,19 @@ impl ComponentV0 {
             _ => None,
         }
     }
+
+    pub fn is_storage_device(&self) -> bool {
+        matches!(self, ComponentV0::VirtioDisk(_) | ComponentV0::NvmeDisk(_))
+    }
+
+    pub fn is_network_device(&self) -> bool {
+        matches!(self, ComponentV0::VirtioNic(_))
+    }
 }
 
 impl MigrationElement for ComponentV0 {
     fn kind(&self) -> &'static str {
-        match self {
-            Self::VirtioDisk(_) => "VirtioDisk",
-            Self::NvmeDisk(_) => "NvmeDisk",
-            Self::VirtioNic(_) => "VirtioNic",
-            Self::SerialPort(_) => "SerialPort",
-            Self::PciPciBridge(_) => "PciPciBridge",
-            Self::QemuPvpanic(_) => "QemuPvpanic",
-            Self::SoftNpuPciPort(_) => "SoftNpuPciPort",
-            Self::SoftNpuPort(_) => "SoftNpuPort",
-            Self::SoftNpuP9(_) => "SoftNpuP9",
-            Self::P9fs(_) => "P9fs",
-            Self::CrucibleBackend(_) => "CrucibleBackend",
-            Self::FileStorageBackend(_) => "FileStorageBackend",
-            Self::BlobStorageBackend(_) => "BlobStorageBackend",
-            Self::VionaBackend(_) => "VionaBackend",
-            Self::DlpiBackend(_) => "DlpiBackend",
-        }
+        self.kind()
     }
 
     fn can_migrate_from_element(
