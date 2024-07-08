@@ -4,20 +4,20 @@
 
 //! Version 0 of a fully-composed instance specification.
 //!
-//! V0 specs are split into 'device' and 'backend' halves that can be serialized
-//! and deserialized independently.
+//! V0 specs contain a board and an arbitrary set of components.
 //!
 //! # Versioning and compatibility
 //!
 //! Changes to structs and enums in this module must be backward-compatible
-//! (i.e. new code must be able to deserialize specs created by old versions of
+//! (i.e. new code must be able to deserialize specs created by old version sof
 //! the module). Breaking changes to the spec structure must be turned into a
-//! new specification version. Note that adding a new component to one of the
-//! existing enums in this module is not a back-compat breaking change.
+//! new specification version. Note that the common case of adding a new
+//! component to an existing enum in this module is not a compat-brekaing
+//! change.
 //!
 //! Data types in this module should have a `V0` suffix in their names to avoid
-//! aliasing with type names in other versions (which can cause Dropshot to
-//! create OpenAPI specs that are missing certain types; see dropshot#383).
+//! aliasing with type names in other versions. (Collisions can cause Dropshot
+//! to create OpenAPI specs that are missing certain types. See dropshot#383.)
 
 use std::collections::HashMap;
 
@@ -32,36 +32,94 @@ use crate::instance_spec::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
+use super::components::{
+    backends::{
+        BlobStorageBackend, CrucibleStorageBackend, DlpiNetworkBackend,
+        FileStorageBackend, VirtioNetworkBackend,
+    },
+    devices::{
+        NvmeDisk, P9fs, PciPciBridge, QemuPvpanic, SerialPort, SoftNpuP9,
+        SoftNpuPciPort, SoftNpuPort, VirtioDisk, VirtioNic,
+    },
+};
+
 pub mod builder;
 
+/// The types of components that can be attached to a VM.
 #[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields, tag = "type", content = "component")]
-pub enum StorageDeviceV0 {
-    VirtioDisk(components::devices::VirtioDisk),
-    NvmeDisk(components::devices::NvmeDisk),
+pub enum ComponentV0 {
+    VirtioDisk(VirtioDisk),
+    NvmeDisk(NvmeDisk),
+    VirtioNic(VirtioNic),
+    SerialPort(SerialPort),
+    PciPciBridge(PciPciBridge),
+    QemuPvpanic(QemuPvpanic),
+
+    /// Only usable in Propolis servers built with the `falcon` feature.
+    SoftNpuPciPort(SoftNpuPciPort),
+
+    /// Only usable in Propolis servers built with the `falcon` feature.
+    SoftNpuPort(SoftNpuPort),
+
+    /// Only usable in Propolis servers built with the `falcon` feature.
+    SoftNpuP9(SoftNpuP9),
+
+    /// Only usable in Propolis servers built with the `falcon` feature.
+    P9fs(P9fs),
+
+    CrucibleBackend(CrucibleStorageBackend),
+    FileStorageBackend(FileStorageBackend),
+    BlobStorageBackend(BlobStorageBackend),
+    VionaBackend(VirtioNetworkBackend),
+    DlpiBackend(DlpiNetworkBackend),
 }
 
-impl StorageDeviceV0 {
-    fn pci_path(&self) -> PciPath {
+impl ComponentV0 {
+    /// Returns the PCI BDF where this component should be attached, or `None`
+    /// if the component is not a PCI device.
+    pub fn pci_path(&self) -> Option<PciPath> {
         match self {
-            Self::VirtioDisk(disk) => disk.pci_path,
-            Self::NvmeDisk(disk) => disk.pci_path,
+            Self::VirtioDisk(disk) => Some(disk.pci_path),
+            Self::NvmeDisk(disk) => Some(disk.pci_path),
+            Self::VirtioNic(nic) => Some(nic.pci_path),
+            Self::PciPciBridge(bridge) => Some(bridge.pci_path),
+            Self::SoftNpuPciPort(port) => Some(port.pci_path),
+            Self::SoftNpuP9(p9) => Some(p9.pci_path),
+            Self::P9fs(p9fs) => Some(p9fs.pci_path),
+            _ => None,
         }
     }
 }
 
-impl MigrationElement for StorageDeviceV0 {
+impl MigrationElement for ComponentV0 {
     fn kind(&self) -> &'static str {
         match self {
-            StorageDeviceV0::VirtioDisk(_) => "StorageDevice(VirtioDisk)",
-            StorageDeviceV0::NvmeDisk(_) => "StorageDevice(NvmeDisk)",
+            Self::VirtioDisk(_) => "VirtioDisk",
+            Self::NvmeDisk(_) => "NvmeDisk",
+            Self::VirtioNic(_) => "VirtioNic",
+            Self::SerialPort(_) => "SerialPort",
+            Self::PciPciBridge(_) => "PciPciBridge",
+            Self::QemuPvpanic(_) => "QemuPvpanic",
+            Self::SoftNpuPciPort(_) => "SoftNpuPciPort",
+            Self::SoftNpuPort(_) => "SoftNpuPort",
+            Self::SoftNpuP9(_) => "SoftNpuP9",
+            Self::P9fs(_) => "P9fs",
+            Self::CrucibleBackend(_) => "CrucibleBackend",
+            Self::FileStorageBackend(_) => "FileStorageBackend",
+            Self::BlobStorageBackend(_) => "BlobStorageBackend",
+            Self::VionaBackend(_) => "VionaBackend",
+            Self::DlpiBackend(_) => "DlpiBackend",
         }
     }
 
     fn can_migrate_from_element(
         &self,
         other: &Self,
-    ) -> Result<(), super::migration::ElementCompatibilityError> {
+    ) -> Result<(), ElementCompatibilityError> {
+        // If the two elements have identical kinds, and that type implements
+        // a compatibility check, delegate to that type's check. Otherwise,
+        // treat the elements as compatible if they're of the same kind.
         match (self, other) {
             (Self::VirtioDisk(this), Self::VirtioDisk(other)) => {
                 this.can_migrate_from_element(other)
@@ -69,77 +127,62 @@ impl MigrationElement for StorageDeviceV0 {
             (Self::NvmeDisk(this), Self::NvmeDisk(other)) => {
                 this.can_migrate_from_element(other)
             }
-            (_, _) => Err(ElementCompatibilityError::ComponentsIncomparable(
-                self.kind(),
-                other.kind(),
-            )),
+            (Self::VirtioNic(this), Self::VirtioNic(other)) => {
+                this.can_migrate_from_element(other)
+            }
+            (Self::SerialPort(this), Self::SerialPort(other)) => {
+                this.can_migrate_from_element(other)
+            }
+            (Self::PciPciBridge(this), Self::PciPciBridge(other)) => {
+                this.can_migrate_from_element(other)
+            }
+            (Self::QemuPvpanic(this), Self::QemuPvpanic(other)) => {
+                this.can_migrate_from_element(other)
+            }
+            (Self::CrucibleBackend(this), Self::CrucibleBackend(other)) => {
+                this.can_migrate_from_element(other)
+            }
+            (
+                Self::FileStorageBackend(this),
+                Self::FileStorageBackend(other),
+            ) => this.can_migrate_from_element(other),
+            (
+                Self::BlobStorageBackend(this),
+                Self::BlobStorageBackend(other),
+            ) => this.can_migrate_from_element(other),
+            (Self::VionaBackend(this), Self::VionaBackend(other)) => {
+                this.can_migrate_from_element(other)
+            }
+            (Self::DlpiBackend(this), Self::DlpiBackend(other)) => {
+                this.can_migrate_from_element(other)
+            }
+            _ => {
+                //
+                if std::mem::discriminant(self) == std::mem::discriminant(other)
+                {
+                    Ok(())
+                } else {
+                    Err(ElementCompatibilityError::ComponentsIncomparable(
+                        self.kind(),
+                        other.kind(),
+                    ))
+                }
+            }
         }
     }
 }
 
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
-#[serde(deny_unknown_fields, tag = "type", content = "component")]
-pub enum NetworkDeviceV0 {
-    VirtioNic(components::devices::VirtioNic),
-}
-
-impl NetworkDeviceV0 {
-    fn pci_path(&self) -> PciPath {
-        match self {
-            Self::VirtioNic(nic) => nic.pci_path,
-        }
-    }
-}
-
-impl MigrationElement for NetworkDeviceV0 {
-    fn kind(&self) -> &'static str {
-        "NetworkDevice(VirtioNic)"
-    }
-
-    fn can_migrate_from_element(
-        &self,
-        other: &Self,
-    ) -> Result<(), ElementCompatibilityError> {
-        let (Self::VirtioNic(this), Self::VirtioNic(other)) = (self, other);
-        this.can_migrate_from_element(other)
-    }
-}
-
+/// A V0 instance specification, consisting of a board and a set of components
+/// to attach to the VM.
 #[derive(Default, Clone, Deserialize, Serialize, Debug, JsonSchema)]
 #[serde(deny_unknown_fields)]
-pub struct DeviceSpecV0 {
+pub struct InstanceSpecV0 {
     pub board: components::board::Board,
-    pub storage_devices: HashMap<SpecKey, StorageDeviceV0>,
-    pub network_devices: HashMap<SpecKey, NetworkDeviceV0>,
-    pub serial_ports: HashMap<SpecKey, components::devices::SerialPort>,
-    pub pci_pci_bridges: HashMap<SpecKey, components::devices::PciPciBridge>,
-
-    // This field has a default value (`None`) to allow for
-    // backwards-compatibility when upgrading from a Propolis
-    // version that does not support this device. If the pvpanic device was not
-    // present in the spec being deserialized, a `None` will be produced,
-    // rather than rejecting the spec.
-    #[serde(default)]
-    // Skip serializing this field if it is `None`. This is so that Propolis
-    // versions with support for this device are backwards-compatible with
-    // older versions that don't, as long as the spec doesn't define a pvpanic
-    // device --- if there is no panic device, skipping the field from the spec
-    // means that the older version will still accept the spec.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub qemu_pvpanic: Option<components::devices::QemuPvpanic>,
-
-    #[cfg(feature = "falcon")]
-    pub softnpu_pci_port: Option<components::devices::SoftNpuPciPort>,
-    #[cfg(feature = "falcon")]
-    pub softnpu_ports: HashMap<SpecKey, components::devices::SoftNpuPort>,
-    #[cfg(feature = "falcon")]
-    pub softnpu_p9: Option<components::devices::SoftNpuP9>,
-    #[cfg(feature = "falcon")]
-    pub p9fs: Option<components::devices::P9fs>,
+    pub components: HashMap<SpecKey, ComponentV0>,
 }
 
-impl DeviceSpecV0 {
-    pub fn can_migrate_devices_from(
+impl InstanceSpecV0 {
+    pub fn can_migrate_from(
         &self,
         other: &Self,
     ) -> Result<(), MigrationCompatibilityError> {
@@ -147,79 +190,15 @@ impl DeviceSpecV0 {
             MigrationCompatibilityError::ElementMismatch("board".to_string(), e)
         })?;
 
-        self.storage_devices
-            .can_migrate_from_collection(&other.storage_devices)
+        self.components
+            .can_migrate_from_collection(&other.components)
             .map_err(|e| {
                 MigrationCompatibilityError::CollectionMismatch(
-                    "storage devices".to_string(),
-                    e,
-                )
-            })?;
-
-        self.network_devices
-            .can_migrate_from_collection(&other.network_devices)
-            .map_err(|e| {
-                MigrationCompatibilityError::CollectionMismatch(
-                    "storage devices".to_string(),
-                    e,
-                )
-            })?;
-
-        self.serial_ports
-            .can_migrate_from_collection(&other.serial_ports)
-            .map_err(|e| {
-                MigrationCompatibilityError::CollectionMismatch(
-                    "serial ports".to_string(),
-                    e,
-                )
-            })?;
-
-        self.pci_pci_bridges
-            .can_migrate_from_collection(&other.pci_pci_bridges)
-            .map_err(|e| {
-                MigrationCompatibilityError::CollectionMismatch(
-                    "PCI bridges".to_string(),
-                    e,
-                )
-            })?;
-
-        self.qemu_pvpanic
-            .can_migrate_from_element(&other.qemu_pvpanic)
-            .map_err(|e| {
-                MigrationCompatibilityError::ElementMismatch(
-                    "QEMU PVPANIC device".to_string(),
+                    "components".to_string(),
                     e,
                 )
             })?;
 
         Ok(())
     }
-}
-
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
-#[serde(deny_unknown_fields, tag = "type", content = "component")]
-pub enum StorageBackendV0 {
-    Crucible(components::backends::CrucibleStorageBackend),
-    File(components::backends::FileStorageBackend),
-    Blob(components::backends::BlobStorageBackend),
-}
-
-#[derive(Clone, Deserialize, Serialize, Debug, JsonSchema)]
-#[serde(deny_unknown_fields, tag = "type", content = "component")]
-pub enum NetworkBackendV0 {
-    Virtio(components::backends::VirtioNetworkBackend),
-    Dlpi(components::backends::DlpiNetworkBackend),
-}
-
-#[derive(Default, Clone, Deserialize, Serialize, Debug, JsonSchema)]
-pub struct BackendSpecV0 {
-    pub storage_backends: HashMap<SpecKey, StorageBackendV0>,
-    pub network_backends: HashMap<SpecKey, NetworkBackendV0>,
-}
-
-#[derive(Default, Clone, Deserialize, Serialize, Debug, JsonSchema)]
-#[serde(deny_unknown_fields)]
-pub struct InstanceSpecV0 {
-    pub devices: DeviceSpecV0,
-    pub backends: BackendSpecV0,
 }

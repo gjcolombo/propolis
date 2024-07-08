@@ -119,7 +119,16 @@ impl MigrationElement for VirtioNic {
 /// A serial port identifier, which determines what I/O ports a guest can use to
 /// access a port.
 #[derive(
-    Clone, Copy, Deserialize, Serialize, Debug, PartialEq, Eq, JsonSchema,
+    Clone,
+    Copy,
+    Deserialize,
+    Serialize,
+    Debug,
+    PartialEq,
+    Eq,
+    JsonSchema,
+    PartialOrd,
+    Ord,
 )]
 #[serde(deny_unknown_fields, rename_all = "snake_case")]
 pub enum SerialPortNumber {
@@ -232,7 +241,7 @@ pub struct QemuPvpanic {
     // TODO(eliza): add support for the PCI PVPANIC device...
 }
 
-impl MigrationElement for Option<QemuPvpanic> {
+impl MigrationElement for QemuPvpanic {
     fn kind(&self) -> &'static str {
         "QemuPvpanic"
     }
@@ -428,20 +437,19 @@ mod test {
 
     #[test]
     fn incompatible_qemu_pvpanic() {
-        let d1 = Some(QemuPvpanic { enable_isa: true });
-        let d2 = Some(QemuPvpanic { enable_isa: false });
+        let d1 = QemuPvpanic { enable_isa: true };
+        let d2 = QemuPvpanic { enable_isa: false };
         assert!(d1.can_migrate_from_element(&d2).is_err());
-        assert!(d1.can_migrate_from_element(&None).is_err());
     }
 
     #[test]
     fn compatible_qemu_pvpanic() {
-        let d1 = Some(QemuPvpanic { enable_isa: true });
-        let d2 = Some(QemuPvpanic { enable_isa: true });
+        let d1 = QemuPvpanic { enable_isa: true };
+        let d2 = QemuPvpanic { enable_isa: true };
         assert!(d1.can_migrate_from_element(&d2).is_ok());
 
-        let d1 = Some(QemuPvpanic { enable_isa: false });
-        let d2 = Some(QemuPvpanic { enable_isa: false });
+        let d1 = QemuPvpanic { enable_isa: false };
+        let d2 = QemuPvpanic { enable_isa: false };
         assert!(d1.can_migrate_from_element(&d2).is_ok());
     }
 }
