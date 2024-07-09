@@ -12,7 +12,7 @@ use std::{
 use anyhow::Context;
 use propolis_api_types::{
     instance_spec::{
-        components::backends::CrucibleStorageBackend, v0::StorageBackendV0,
+        components::backends::CrucibleStorageBackend, v0::ComponentV0,
     },
     InstanceSpecEnsureRequest, InstanceState, MigrationState,
 };
@@ -652,10 +652,9 @@ impl StateDriver {
 
         let mut objects = self.objects.lock_exclusive().await;
         let (readonly, old_vcr_json) = {
-            let StorageBackendV0::Crucible(bes) = objects
+            let ComponentV0::CrucibleBackend(bes) = objects
                 .instance_spec()
-                .backends
-                .storage_backends
+                .components
                 .get(&disk_name)
                 .ok_or_else(|| spec_element_not_found(&disk_name))?
             else {
@@ -685,16 +684,12 @@ impl StateDriver {
             )
         }?;
 
-        let new_bes = StorageBackendV0::Crucible(CrucibleStorageBackend {
+        let new_bes = ComponentV0::CrucibleBackend(CrucibleStorageBackend {
             readonly,
             request_json: new_vcr_json,
         });
 
-        objects
-            .instance_spec_mut()
-            .backends
-            .storage_backends
-            .insert(disk_name, new_bes);
+        objects.instance_spec_mut().components.insert(disk_name, new_bes);
 
         info!(self.log, "replaced Crucible VCR"; "backend_id" => %backend_id);
 

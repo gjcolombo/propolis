@@ -14,7 +14,10 @@ use propolis_api_types::instance_spec::{
             BlobStorageBackend, CrucibleStorageBackend, FileStorageBackend,
             VirtioNetworkBackend,
         },
-        devices::{NvmeDisk, PciPciBridge, QemuPvpanic, VirtioDisk, VirtioNic},
+        devices::{
+            NvmeDisk, PciPciBridge, QemuPvpanic, SerialPort, VirtioDisk,
+            VirtioNic,
+        },
     },
     v0::{
         builder::{SpecBuilder, SpecBuilderError},
@@ -496,8 +499,11 @@ impl ServerSpecBuilder {
             ))
         })?;
 
-        self.builder.set_softnpu_pci_port(
-            components::devices::SoftNpuPciPort { pci_path },
+        self.builder.add_component(
+            "softnpu_pci".to_string(),
+            ComponentV0::SoftNpuPciPort(components::devices::SoftNpuPciPort {
+                pci_path,
+            }),
         )?;
 
         Ok(())
@@ -509,6 +515,8 @@ impl ServerSpecBuilder {
         name: &str,
         device: &config::Device,
     ) -> Result<(), ServerSpecBuilderError> {
+        use propolis_api_types::instance_spec::components::devices::SoftNpuPort;
+
         let vnic_name = device.get_string("vnic").ok_or_else(|| {
             ServerSpecBuilderError::ConfigTomlError(format!(
                 "Failed to parse vNIC name for device {}",
@@ -516,12 +524,12 @@ impl ServerSpecBuilder {
             ))
         })?;
 
-        self.builder.add_softnpu_port(
+        self.builder.add_component(
             name.to_string(),
-            components::devices::SoftNpuPort {
+            ComponentV0::SoftNpuPort(SoftNpuPort {
                 name: name.to_string(),
                 backend_name: vnic_name.to_string(),
-            },
+            }),
         )?;
 
         Ok(())
@@ -533,6 +541,8 @@ impl ServerSpecBuilder {
         name: &str,
         device: &config::Device,
     ) -> Result<(), ServerSpecBuilderError> {
+        use propolis_api_types::instance_spec::components::devices::P9fs;
+
         let source: String = device.get("source").ok_or_else(|| {
             ServerSpecBuilderError::ConfigTomlError(format!(
                 "Failed to get source for p9 device {}",
@@ -555,12 +565,10 @@ impl ServerSpecBuilder {
             ))
         })?;
 
-        self.builder.set_p9fs(components::devices::P9fs {
-            source,
-            target,
-            chunk_size,
-            pci_path,
-        })?;
+        self.builder.add_component(
+            "p9fs".to_string(),
+            ComponentV0::P9fs(P9fs { source, target, chunk_size, pci_path }),
+        )?;
 
         Ok(())
     }
@@ -570,7 +578,18 @@ impl ServerSpecBuilder {
         &mut self,
         port: components::devices::SerialPortNumber,
     ) -> Result<(), ServerSpecBuilderError> {
-        self.builder.add_serial_port(port)?;
+        let name = match port {
+            components::devices::SerialPortNumber::Com1 => "com1",
+            components::devices::SerialPortNumber::Com2 => "com2",
+            components::devices::SerialPortNumber::Com3 => "com3",
+            components::devices::SerialPortNumber::Com4 => "com4",
+        };
+
+        self.builder.add_component(
+            name.to_string(),
+            ComponentV0::SerialPort(SerialPort { num: port }),
+        )?;
+
         Ok(())
     }
 

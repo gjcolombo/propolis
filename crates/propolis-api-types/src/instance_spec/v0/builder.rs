@@ -51,6 +51,10 @@ impl SpecBuilder {
         }
     }
 
+    pub fn finish(self) -> InstanceSpecV0 {
+        self.spec
+    }
+
     /// Adds a PCI path to this builder's record of PCI locations with an
     /// attached device. If the path is already in use, returns an error.
     fn register_pci_device(

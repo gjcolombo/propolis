@@ -30,10 +30,6 @@ pub struct CrucibleStorageBackend {
 }
 
 impl MigrationElement for CrucibleStorageBackend {
-    fn kind(&self) -> &'static str {
-        "CrucibleStorageBackend"
-    }
-
     fn can_migrate_from_element(
         &self,
         other: &Self,
@@ -74,10 +70,6 @@ pub struct FileStorageBackend {
 }
 
 impl MigrationElement for FileStorageBackend {
-    fn kind(&self) -> &'static str {
-        "FileStorageBackend"
-    }
-
     fn can_migrate_from_element(
         &self,
         other: &Self,
@@ -117,10 +109,6 @@ impl std::fmt::Debug for BlobStorageBackend {
 }
 
 impl MigrationElement for BlobStorageBackend {
-    fn kind(&self) -> &'static str {
-        "BlobStorageBackend"
-    }
-
     fn can_migrate_from_element(
         &self,
         other: &Self,
@@ -147,10 +135,6 @@ pub struct VirtioNetworkBackend {
 }
 
 impl MigrationElement for VirtioNetworkBackend {
-    fn kind(&self) -> &'static str {
-        "VirtioNetworkBackend"
-    }
-
     fn can_migrate_from_element(
         &self,
         _other: &Self,
@@ -169,10 +153,6 @@ pub struct DlpiNetworkBackend {
 }
 
 impl MigrationElement for DlpiNetworkBackend {
-    fn kind(&self) -> &'static str {
-        "DlpiNetworkBackend"
-    }
-
     fn can_migrate_from_element(
         &self,
         _other: &Self,

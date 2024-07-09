@@ -65,10 +65,6 @@ pub enum MigrationCompatibilityError {
 /// Implementors of this trait are individual devices or VMM components who can
 /// describe inconsistencies using an [`ElementCompatibilityError`] variant.
 pub(crate) trait MigrationElement {
-    /// Returns a string indicating the kind of component this is for diagnostic
-    /// purposes.
-    fn kind(&self) -> &'static str;
-
     /// Returns true if `self` and `other` describe spec elements that are
     /// similar enough to permit migration of this element from one VMM to
     /// another.
@@ -170,10 +166,6 @@ mod test {
             } else {
                 Ok(())
             }
-        }
-
-        fn kind(&self) -> &'static str {
-            "TestComponent"
         }
     }
 

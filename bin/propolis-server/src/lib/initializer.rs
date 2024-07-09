@@ -33,6 +33,9 @@ use propolis::hw::uart::LpcUart;
 use propolis::hw::{nvme, virtio};
 use propolis::intr_pins;
 use propolis::vmm::{self, Builder, Machine};
+use propolis_api_types::instance_spec::components::{
+    NetworkDevice, StorageDevice,
+};
 use propolis_api_types::instance_spec::{self, v0::InstanceSpecV0};
 use propolis_api_types::InstanceProperties;
 use slog::info;
@@ -386,7 +389,7 @@ impl<'a> MachineInitializer<'a> {
             return Ok(());
         }
 
-        if let Some(_) = specs.next() {
+        if specs.next().is_some() {
             anyhow::bail!("spec contains multiple pvpanic devices");
         }
 
@@ -521,9 +524,7 @@ impl<'a> MachineInitializer<'a> {
             Nvme,
         }
 
-        for (name, device_spec) in
-            self.spec.components.iter().filter(|(_, v)| v.is_storage_device())
-        {
+        for (name, device_spec) in self.spec.storage_devices() {
             info!(
                 self.log,
                 "Creating storage device {} with properties {:?}",
@@ -532,13 +533,12 @@ impl<'a> MachineInitializer<'a> {
             );
 
             let (device_interface, backend_name, pci_path) = match device_spec {
-                instance_spec::v0::ComponentV0::VirtioDisk(disk) => {
+                StorageDevice::VirtioDisk(disk) => {
                     (DeviceInterface::Virtio, &disk.backend_name, disk.pci_path)
                 }
-                instance_spec::v0::ComponentV0::NvmeDisk(disk) => {
+                StorageDevice::NvmeDisk(disk) => {
                     (DeviceInterface::Nvme, &disk.backend_name, disk.pci_path)
                 }
-                _ => unreachable!("already filtered for storage devices"),
             };
 
             let backend_spec =
@@ -614,16 +614,9 @@ impl<'a> MachineInitializer<'a> {
         &mut self,
         chipset: &RegisteredChipset,
     ) -> Result<(), Error> {
-        for (name, component) in
-            self.spec.components.iter().filter(|(_, v)| v.is_network_device())
-        {
+        for (name, component) in self.spec.network_devices() {
             info!(self.log, "Creating vNIC {}", name);
-            let instance_spec::v0::ComponentV0::VirtioNic(vnic_spec) =
-                component
-            else {
-                unreachable!("already filtered for network devices");
-            };
-
+            let NetworkDevice::VirtioNic(vnic_spec) = component;
             let backend_spec =
                 self.spec.components.get(&vnic_spec.backend_name).ok_or_else(
                     || {
@@ -644,8 +637,10 @@ impl<'a> MachineInitializer<'a> {
             })?;
 
             let vnic_name = match backend_spec {
-                instance_spec::v0::ComponentV0::Virtio(spec) => &spec.vnic_name,
-                instance_spec::v0::ComponentV0::Dlpi(_) => {
+                instance_spec::v0::ComponentV0::VionaBackend(spec) => {
+                    &spec.vnic_name
+                }
+                instance_spec::v0::ComponentV0::DlpiBackend(_) => {
                     return Err(Error::new(
                         ErrorKind::InvalidInput,
                         format!(
@@ -734,16 +729,17 @@ impl<'a> MachineInitializer<'a> {
     ) -> Result<(), Error> {
         // Check to make sure we actually have both a pci port and at least one
         // regular SoftNpu port, otherwise just return.
-        let pci_port = match &self.spec.devices.softnpu_pci_port {
-            Some(tfp) => tfp,
-            None => return Ok(()),
-        };
-        if self.spec.devices.softnpu_ports.is_empty() {
+        let mut pci_ports = self.spec.softnpu_pci_ports();
+        let Some((_, pci_port)) = pci_ports.next() else {
             return Ok(());
-        }
+        };
 
         let mut ports: Vec<&instance_spec::components::devices::SoftNpuPort> =
-            self.spec.devices.softnpu_ports.values().collect();
+            self.spec.softnpu_ports().map(|port| port.1).collect();
+
+        if ports.is_empty() {
+            return Ok(());
+        }
 
         // SoftNpu ports are named <topology>_<node>_vnic<N> by falcon, where
         // <N> indicates the intended order.
@@ -751,12 +747,8 @@ impl<'a> MachineInitializer<'a> {
 
         let mut data_links: Vec<String> = Vec::new();
         for x in &ports {
-            let backend = self
-                .spec
-                .backends
-                .network_backends
-                .get(&x.backend_name)
-                .ok_or_else(|| {
+            let backend =
+                self.spec.components.get(&x.backend_name).ok_or_else(|| {
                     Error::new(
                         ErrorKind::InvalidInput,
                         format!(
@@ -767,7 +759,7 @@ impl<'a> MachineInitializer<'a> {
                 })?;
 
             let vnic = match &backend {
-                instance_spec::v0::NetworkBackendV0::Dlpi(dlpi) => {
+                instance_spec::v0::ComponentV0::DlpiBackend(dlpi) => {
                     &dlpi.vnic_name
                 }
                 _ => {
@@ -799,7 +791,7 @@ impl<'a> MachineInitializer<'a> {
         let p9_handler = virtio::softnpu::SoftNpuP9Handler::new(
             "/dev/softnpufs".to_owned(),
             "/dev/softnpufs".to_owned(),
-            self.spec.devices.softnpu_ports.len() as u16,
+            ports.len() as u16,
             pipeline.clone(),
             self.log.clone(),
         );
@@ -808,8 +800,8 @@ impl<'a> MachineInitializer<'a> {
         self.devices.insert("softnpu-p9fs".to_string(), vio9p.clone());
         let bdf: pci::Bdf = self
             .spec
-            .devices
-            .softnpu_p9
+            .softnpu_p9()
+            .next()
             .as_ref()
             .ok_or_else(|| {
                 Error::new(
@@ -817,6 +809,7 @@ impl<'a> MachineInitializer<'a> {
                     "SoftNpu p9 device missing".to_owned(),
                 )
             })?
+            .1
             .pci_path
             .try_into()
             .map_err(|e| {
@@ -870,10 +863,7 @@ impl<'a> MachineInitializer<'a> {
     ) -> Result<(), Error> {
         // Check that there is actually a p9fs device to register, if not bail
         // early.
-        let p9fs = match &self.spec.devices.p9fs {
-            Some(p9fs) => p9fs,
-            None => return Ok(()),
-        };
+        let Some((_, p9fs)) = self.spec.p9fs().next() else { return Ok(()) };
 
         let bdf: pci::Bdf = p9fs.pci_path.try_into().map_err(|e| {
             Error::new(

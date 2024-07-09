@@ -23,10 +23,6 @@ pub struct I440Fx {
 }
 
 impl MigrationElement for I440Fx {
-    fn kind(&self) -> &'static str {
-        "i440fx"
-    }
-
     fn can_migrate_from_element(
         &self,
         other: &Self,
@@ -60,12 +56,6 @@ pub enum Chipset {
 }
 
 impl MigrationElement for Chipset {
-    fn kind(&self) -> &'static str {
-        match self {
-            Self::I440Fx(_) => "i440fx",
-        }
-    }
-
     fn can_migrate_from_element(
         &self,
         other: &Self,
@@ -103,10 +93,6 @@ impl Default for Board {
 }
 
 impl MigrationElement for Board {
-    fn kind(&self) -> &'static str {
-        "Board"
-    }
-
     fn can_migrate_from_element(
         &self,
         other: &Self,

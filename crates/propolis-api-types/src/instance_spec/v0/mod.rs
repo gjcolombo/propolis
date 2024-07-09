@@ -41,6 +41,7 @@ use super::components::{
         NvmeDisk, P9fs, PciPciBridge, QemuPvpanic, SerialPort, SoftNpuP9,
         SoftNpuPciPort, SoftNpuPort, VirtioDisk, VirtioNic,
     },
+    NetworkDevice, StorageBackend, StorageDevice,
 };
 
 pub mod builder;
@@ -110,21 +111,9 @@ impl ComponentV0 {
             _ => None,
         }
     }
-
-    pub fn is_storage_device(&self) -> bool {
-        matches!(self, ComponentV0::VirtioDisk(_) | ComponentV0::NvmeDisk(_))
-    }
-
-    pub fn is_network_device(&self) -> bool {
-        matches!(self, ComponentV0::VirtioNic(_))
-    }
 }
 
 impl MigrationElement for ComponentV0 {
-    fn kind(&self) -> &'static str {
-        self.kind()
-    }
-
     fn can_migrate_from_element(
         &self,
         other: &Self,
@@ -212,5 +201,97 @@ impl InstanceSpecV0 {
             })?;
 
         Ok(())
+    }
+
+    pub fn storage_devices(
+        &self,
+    ) -> impl Iterator<Item = (&String, StorageDevice<'_>)> {
+        self.components.iter().filter_map(|(k, v)| {
+            match v {
+                ComponentV0::VirtioDisk(d) => {
+                    Some(StorageDevice::VirtioDisk(d))
+                }
+                ComponentV0::NvmeDisk(d) => Some(StorageDevice::NvmeDisk(d)),
+                _ => None,
+            }
+            .map(|v| (k, v))
+        })
+    }
+
+    pub fn storage_backends(
+        &self,
+    ) -> impl Iterator<Item = (&String, StorageBackend<'_>)> {
+        self.components.iter().filter_map(|(k, v)| {
+            match v {
+                ComponentV0::CrucibleBackend(b) => {
+                    Some(StorageBackend::CrucibleBackend(b))
+                }
+                ComponentV0::FileStorageBackend(b) => {
+                    Some(StorageBackend::FileStorageBackend(b))
+                }
+                ComponentV0::BlobStorageBackend(b) => {
+                    Some(StorageBackend::BlobStorageBackend(b))
+                }
+                _ => None,
+            }
+            .map(|v| (k, v))
+        })
+    }
+
+    pub fn network_devices(
+        &self,
+    ) -> impl Iterator<Item = (&String, NetworkDevice<'_>)> {
+        self.components.iter().filter_map(|(k, v)| {
+            {
+                match v {
+                    ComponentV0::VirtioNic(n) => {
+                        Some(NetworkDevice::VirtioNic(n))
+                    }
+                    _ => None,
+                }
+            }
+            .map(|v| (k, v))
+        })
+    }
+
+    pub fn pci_pci_bridges(
+        &self,
+    ) -> impl Iterator<Item = (&String, &PciPciBridge)> {
+        self.components.iter().filter_map(|(k, v)| match v {
+            ComponentV0::PciPciBridge(b) => Some((k, b)),
+            _ => None,
+        })
+    }
+
+    pub fn softnpu_pci_ports(
+        &self,
+    ) -> impl Iterator<Item = (&String, &SoftNpuPciPort)> {
+        self.components.iter().filter_map(|(k, v)| match v {
+            ComponentV0::SoftNpuPciPort(p) => Some((k, p)),
+            _ => None,
+        })
+    }
+
+    pub fn softnpu_ports(
+        &self,
+    ) -> impl Iterator<Item = (&String, &SoftNpuPort)> {
+        self.components.iter().filter_map(|(k, v)| match v {
+            ComponentV0::SoftNpuPort(p) => Some((k, p)),
+            _ => None,
+        })
+    }
+
+    pub fn softnpu_p9(&self) -> impl Iterator<Item = (&String, &SoftNpuP9)> {
+        self.components.iter().filter_map(|(k, v)| match v {
+            ComponentV0::SoftNpuP9(p) => Some((k, p)),
+            _ => None,
+        })
+    }
+
+    pub fn p9fs(&self) -> impl Iterator<Item = (&String, &P9fs)> {
+        self.components.iter().filter_map(|(k, v)| match v {
+            ComponentV0::P9fs(p) => Some((k, p)),
+            _ => None,
+        })
     }
 }

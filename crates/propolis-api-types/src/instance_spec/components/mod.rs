@@ -18,3 +18,27 @@
 pub mod backends;
 pub mod board;
 pub mod devices;
+
+#[derive(Debug)]
+pub enum StorageDevice<'a> {
+    VirtioDisk(&'a devices::VirtioDisk),
+    NvmeDisk(&'a devices::NvmeDisk),
+}
+
+#[derive(Debug)]
+pub enum StorageBackend<'a> {
+    CrucibleBackend(&'a backends::CrucibleStorageBackend),
+    FileStorageBackend(&'a backends::FileStorageBackend),
+    BlobStorageBackend(&'a backends::BlobStorageBackend),
+}
+
+#[derive(Debug)]
+pub enum NetworkDevice<'a> {
+    VirtioNic(&'a devices::VirtioNic),
+}
+
+#[derive(Debug)]
+pub enum NetworkBackend<'a> {
+    VionaBackend(&'a backends::VirtioNetworkBackend),
+    DlpiBackend(&'a backends::DlpiNetworkBackend),
+}

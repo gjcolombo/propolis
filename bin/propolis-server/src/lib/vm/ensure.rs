@@ -212,7 +212,7 @@ impl<'a> VmEnsureNotStarted<'a> {
         init.initialize_storage_devices(&chipset, options.nexus_client.clone())
             .await?;
 
-        let ramfb = init.initialize_fwcfg(v0_spec.devices.board.cpus)?;
+        let ramfb = init.initialize_fwcfg(v0_spec.board.cpus)?;
         init.initialize_cpus()?;
         let vcpu_tasks = Box::new(crate::vcpu_tasks::VcpuTasks::new(
             &machine,
