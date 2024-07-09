@@ -13,7 +13,7 @@ use std::{
 
 use anyhow::Context;
 use propolis_client::types::{
-    CrucibleOpts, CrucibleStorageBackend, StorageBackendV0,
+    ComponentV0, CrucibleOpts, CrucibleStorageBackend,
     VolumeConstructionRequest,
 };
 use rand::{rngs::StdRng, RngCore, SeedableRng};
@@ -280,7 +280,7 @@ impl CrucibleDisk {
 }
 
 impl super::DiskConfig for CrucibleDisk {
-    fn backend_spec(&self) -> (String, StorageBackendV0) {
+    fn backend_spec(&self) -> (String, ComponentV0) {
         let gen = self.generation.load(Ordering::Relaxed);
         let downstairs_addrs = self
             .downstairs_instances
@@ -320,7 +320,7 @@ impl super::DiskConfig for CrucibleDisk {
 
         (
             self.backend_name.clone(),
-            StorageBackendV0::Crucible(CrucibleStorageBackend {
+            ComponentV0::CrucibleBackend(CrucibleStorageBackend {
                 request_json: serde_json::to_string(&vcr)
                     .expect("VolumeConstructionRequest should serialize"),
                 readonly: false,

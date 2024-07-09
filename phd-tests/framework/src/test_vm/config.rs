@@ -7,8 +7,11 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use propolis_client::{
-    instance_spec::SpecBuilderV0,
-    types::{NvmeDisk, PciPath, SerialPortNumber, StorageDeviceV0, VirtioDisk},
+    instance_spec::SpecBuilder,
+    types::{
+        ComponentV0, NvmeDisk, PciPath, SerialPort, SerialPortNumber,
+        VirtioDisk,
+    },
 };
 
 use crate::{
@@ -186,8 +189,7 @@ impl VmConfig {
             );
         }
 
-        let mut spec_builder =
-            SpecBuilderV0::new(self.cpus, self.memory_mib, false);
+        let mut spec_builder = SpecBuilder::new(self.cpus, self.memory_mib);
 
         // Iterate over the collection of disks and handles and add spec
         // elements for all of them. This assumes the disk handles were created
@@ -202,31 +204,29 @@ impl VmConfig {
             let pci_path = PciPath::new(0, req.pci_device_num, 0).unwrap();
             let (backend_name, backend_spec) = hdl.backend_spec();
             let device_spec = match req.interface {
-                DiskInterface::Virtio => {
-                    StorageDeviceV0::VirtioDisk(VirtioDisk {
-                        backend_name: backend_name.clone(),
-                        pci_path,
-                    })
-                }
-                DiskInterface::Nvme => StorageDeviceV0::NvmeDisk(NvmeDisk {
+                DiskInterface::Virtio => ComponentV0::VirtioDisk(VirtioDisk {
+                    backend_name: backend_name.clone(),
+                    pci_path,
+                }),
+                DiskInterface::Nvme => ComponentV0::NvmeDisk(NvmeDisk {
                     backend_name: backend_name.clone(),
                     pci_path,
                 }),
             };
 
             spec_builder
-                .add_storage_device(
-                    device_name,
-                    device_spec,
-                    backend_name,
-                    backend_spec,
-                )
+                .add_component(device_name, device_spec)
                 .context("adding storage device to spec")?;
+
+            spec_builder
+                .add_component(backend_name, backend_spec)
+                .context("adding storage backend to spec")?;
         }
 
-        spec_builder
-            .add_serial_port(SerialPortNumber::Com1)
-            .context("adding serial port to spec")?;
+        spec_builder.add_component(
+            "com1".to_string(),
+            ComponentV0::SerialPort(SerialPort { num: SerialPortNumber::Com1 }),
+        )?;
 
         let instance_spec = spec_builder.finish();
 
