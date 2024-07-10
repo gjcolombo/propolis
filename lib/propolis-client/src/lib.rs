@@ -9,12 +9,6 @@ progenitor::generate_api!(
     interface = Builder,
     tags = Separate,
     patch = {
-        // Add `Default` to types related to instance specs
-        InstanceSpecV0 = { derives = [Clone, Debug, Default, Serialize, Deserialize] },
-        BackendSpecV0 = { derives = [Clone, Debug, Default, Serialize, Deserialize] },
-        DeviceSpecV0 = { derives = [Clone, Debug, Default, Serialize, Deserialize] },
-        Board = { derives = [Clone, Debug, Default, Serialize, Deserialize] },
-
         // Some Crucible-related bits are re-exported through simulated
         // sled-agent and thus require JsonSchema
         DiskRequest = { derives = [Clone, Debug, schemars::JsonSchema, Serialize, Deserialize] },
