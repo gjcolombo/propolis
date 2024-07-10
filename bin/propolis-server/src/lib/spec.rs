@@ -601,7 +601,7 @@ impl ServerSpecBuilder {
 #[cfg(test)]
 mod test {
     use crucible_client_types::VolumeConstructionRequest;
-    use propolis_api_types::{InstanceMetadata, Slot};
+    use propolis_api_types::{InstanceMetadata, Slot, VirtualPlatform};
     use uuid::Uuid;
 
     use crate::config::Config;
@@ -627,6 +627,7 @@ mod test {
                 bootrom_id: Default::default(),
                 memory: 512,
                 vcpus: 4,
+                platform: VirtualPlatform::OxideMvp,
             },
             &Config::default(),
         )

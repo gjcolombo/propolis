@@ -1265,6 +1265,14 @@
             "description": "Human-readable name of the Instance.",
             "type": "string"
           },
+          "platform": {
+            "description": "The virtual platform to use when configuring this instance.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/VirtualPlatform"
+              }
+            ]
+          },
           "vcpus": {
             "description": "Number of vCPUs to be allocated to the Instance.",
             "type": "integer",
@@ -1280,6 +1288,7 @@
           "memory",
           "metadata",
           "name",
+          "platform",
           "vcpus"
         ]
       },
@@ -1811,6 +1820,13 @@
           "pci_path"
         ],
         "additionalProperties": false
+      },
+      "VirtualPlatform": {
+        "type": "string",
+        "enum": [
+          "OxideMvp",
+          "MilanV1_0"
+        ]
       },
       "VolumeConstructionRequest": {
         "oneOf": [

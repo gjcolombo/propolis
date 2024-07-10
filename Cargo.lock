@@ -3668,6 +3668,7 @@ name = "propolis_api_types"
 version = "0.0.0"
 dependencies = [
  "crucible-client-types",
+ "oxide_virtual_platforms",
  "propolis_types",
  "schemars",
  "serde",

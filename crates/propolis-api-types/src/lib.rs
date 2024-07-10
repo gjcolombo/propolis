@@ -6,6 +6,7 @@
 
 use std::{fmt, net::SocketAddr};
 
+pub use oxide_virtual_platforms::VirtualPlatform;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -214,6 +215,8 @@ pub struct InstanceProperties {
     pub memory: u64,
     /// Number of vCPUs to be allocated to the Instance.
     pub vcpus: u8,
+    /// The virtual platform to use when configuring this instance.
+    pub platform: VirtualPlatform,
 }
 
 impl InstanceProperties {

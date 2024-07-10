@@ -9,6 +9,7 @@ doctest = false
 
 [dependencies]
 crucible-client-types.workspace = true
+oxide_virtual_platforms.workspace = true
 propolis_types.workspace = true
 schemars.workspace = true
 serde.workspace = true
