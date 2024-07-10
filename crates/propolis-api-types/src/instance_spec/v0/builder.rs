@@ -7,11 +7,14 @@
 use std::collections::BTreeSet;
 
 use crate::instance_spec::{
-    components::{self, board::Cpuid, devices::SerialPortNumber},
+    components::{
+        self,
+        board::{Cpuid, CpuidEntry},
+        devices::SerialPortNumber,
+    },
     v0::*,
     PciPath,
 };
-use oxide_virtual_platforms::VirtualPlatform;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -36,17 +39,14 @@ pub struct SpecBuilder {
 }
 
 impl SpecBuilder {
-    pub fn new(cpus: u8, memory_mb: u64, platform: VirtualPlatform) -> Self {
+    pub fn new(cpus: u8, memory_mb: u64) -> Self {
         let board = components::board::Board {
             cpus,
             memory_mb,
             chipset: components::board::Chipset::I440Fx(
                 components::board::I440Fx { enable_pcie: false },
             ),
-            cpuid: match platform {
-                VirtualPlatform::OxideMvp => Cpuid::BhyveDefault,
-                VirtualPlatform::MilanV1_0 => Cpuid::BhyveDefault, // TODO(gjc)
-            },
+            cpuid: Cpuid::BhyveDefault,
         };
 
         Self {
@@ -58,6 +58,11 @@ impl SpecBuilder {
 
     pub fn finish(self) -> InstanceSpecV0 {
         self.spec
+    }
+
+    pub fn set_cpuid(&mut self, entries: Vec<CpuidEntry>) -> &Self {
+        self.spec.board.cpuid = Cpuid::Entries(entries);
+        self
     }
 
     /// Adds a PCI path to this builder's record of PCI locations with an

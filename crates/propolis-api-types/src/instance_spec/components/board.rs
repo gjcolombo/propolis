@@ -82,22 +82,22 @@ impl MigrationElement for Chipset {
 #[serde(deny_unknown_fields)]
 pub struct CpuidEntry {
     /// The leaf/function ID (passed in eax).
-    leaf: u32,
+    pub leaf: u32,
 
     /// An optional subleaf/index ID (passed in ecx).
-    subleaf: Option<u32>,
+    pub subleaf: Option<u32>,
 
     /// The value to return in eax.
-    eax: u32,
+    pub eax: u32,
 
     /// The value to return in ebx.
-    ebx: u32,
+    pub ebx: u32,
 
     /// The value to return in ecx.
-    ecx: u32,
+    pub ecx: u32,
 
     /// The value to return in edx.
-    edx: u32,
+    pub edx: u32,
 }
 
 impl std::fmt::Display for CpuidEntry {
@@ -145,6 +145,7 @@ pub enum Cpuid {
     BhyveDefault,
 
     /// Use an explicit set of CPUID values.
+    /// TODO(gjc): vendor information
     Entries(Vec<CpuidEntry>),
 }
 

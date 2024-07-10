@@ -7,28 +7,33 @@
 use std::str::FromStr;
 
 use crate::config;
-use propolis_api_types::instance_spec::{
-    components::{
-        self,
-        backends::{
-            BlobStorageBackend, CrucibleStorageBackend, FileStorageBackend,
-            VirtioNetworkBackend,
-        },
-        devices::{
-            NvmeDisk, PciPciBridge, QemuPvpanic, SerialPort, VirtioDisk,
-            VirtioNic,
-        },
-    },
-    v0::{
-        builder::{SpecBuilder, SpecBuilderError},
-        *,
-    },
-    PciPath,
-};
 use propolis_api_types::{
     self as api, DiskRequest, InstanceProperties, NetworkInterfaceRequest,
 };
+use propolis_api_types::{
+    instance_spec::{
+        components::{
+            self,
+            backends::{
+                BlobStorageBackend, CrucibleStorageBackend, FileStorageBackend,
+                VirtioNetworkBackend,
+            },
+            devices::{
+                NvmeDisk, PciPciBridge, QemuPvpanic, SerialPort, VirtioDisk,
+                VirtioNic,
+            },
+        },
+        v0::{
+            builder::{SpecBuilder, SpecBuilderError},
+            *,
+        },
+        PciPath,
+    },
+    VirtualPlatform,
+};
 use thiserror::Error;
+
+mod cpuid;
 
 /// Errors that can occur while building an instance spec from component parts.
 #[derive(Debug, Error)]
@@ -224,14 +229,17 @@ impl ServerSpecBuilder {
                 },
             )?;
 
-        let mut builder = SpecBuilder::new(
-            properties.vcpus,
-            properties.memory,
-            properties.platform,
-        );
+        let mut builder = SpecBuilder::new(properties.vcpus, properties.memory);
 
         if enable_pcie {
             builder.enable_pcie();
+        }
+
+        match properties.platform {
+            VirtualPlatform::OxideMvp => {}
+            VirtualPlatform::MilanV1_0 => {
+                builder.set_cpuid(cpuid::MILAN_V1.to_vec());
+            }
         }
 
         builder.add_component(
