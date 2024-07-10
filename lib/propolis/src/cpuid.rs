@@ -278,6 +278,12 @@ impl Specializer {
             match set.get_mut(Ident(0x8000001d, Some(ecx))) {
                 None => break,
                 Some(vals) => {
+                    // Bits 4:0 are set to 0 to signify the first invalid
+                    // subleaf of this leaf.
+                    if (vals.eax & 0b00011111) == 0 {
+                        break;
+                    }
+
                     // bits 7:5 hold the cache level
                     let visible_count = match (vals.eax & 0b11100000 >> 5) {
                         0b001 | 0b010 => {

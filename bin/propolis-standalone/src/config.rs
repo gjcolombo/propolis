@@ -227,7 +227,7 @@ pub fn parse_cpuid(config: &Config) -> anyhow::Result<Option<cpuid::Set>> {
 
             if conflict.is_some() {
                 anyhow::bail!(
-                    "conflicing entry at func:{:#?} idx:{:#?}",
+                    "conflicting entry at func:{:#?} idx:{:#?}",
                     entry.func,
                     entry.idx
                 )

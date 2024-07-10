@@ -5,7 +5,7 @@
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::{Error, ErrorKind};
-use std::num::NonZeroUsize;
+use std::num::{NonZeroU8, NonZeroUsize};
 use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -33,12 +33,14 @@ use propolis::hw::uart::LpcUart;
 use propolis::hw::{nvme, virtio};
 use propolis::intr_pins;
 use propolis::vmm::{self, Builder, Machine};
+use propolis_api_types::instance_spec::components::board::Cpuid;
 use propolis_api_types::instance_spec::components::{
     NetworkDevice, StorageDevice,
 };
 use propolis_api_types::instance_spec::{self, v0::InstanceSpecV0};
 use propolis_api_types::InstanceProperties;
 use slog::info;
+use strum::IntoEnumIterator;
 
 // Arbitrary ROM limit for now
 const MAX_ROM_SIZE: usize = 0x20_0000;
@@ -1071,8 +1073,60 @@ impl<'a> MachineInitializer<'a> {
         Ok(ramfb)
     }
 
-    pub fn initialize_cpus(&mut self) -> Result<(), Error> {
+    pub fn initialize_cpus(&mut self) -> Result<(), anyhow::Error> {
+        use propolis::cpuid;
+        let cpuid_to_set =
+            if let Cpuid::Entries(entries) = &self.spec.board.cpuid {
+                // TODO(gjc) get the vendor from the spec instead
+                let mut set = cpuid::Set::new(propolis::cpuid::VendorKind::Amd);
+                for entry in entries {
+                    let conflict = set.insert(
+                        cpuid::Ident(entry.leaf, entry.subleaf),
+                        cpuid::Entry {
+                            eax: entry.eax,
+                            ebx: entry.ebx,
+                            ecx: entry.ecx,
+                            edx: entry.edx,
+                        },
+                    );
+
+                    if conflict.is_some() {
+                        anyhow::bail!(
+                            "conflicting CPUID entry for leaf {} subleaf {:?}",
+                            entry.leaf,
+                            entry.subleaf
+                        );
+                    }
+                }
+
+                Some(set)
+            } else {
+                None
+            };
+
         for vcpu in self.machine.vcpus.iter() {
+            if let Some(cpuid_to_set) = &cpuid_to_set {
+                let specialize_result = cpuid::Specializer::new()
+                    .with_vcpu_count(
+                        NonZeroU8::new(self.spec.board.cpus).unwrap(),
+                        true,
+                    )
+                    .with_vcpuid(vcpu.id)
+                    .with_cache_topo()
+                    .clear_cpu_topo(cpuid::TopoKind::iter())
+                    .execute(cpuid_to_set.clone());
+
+                if let Err(e) = specialize_result {
+                    slog::error!(self.log, "error specializing CPUID values";
+                           "error" => ?e);
+
+                    return Err(anyhow::Error::from(e)
+                        .context("specializing CPUID values"))?;
+                }
+
+                vcpu.set_cpuid(specialize_result.unwrap())
+                    .context("applying specialized CPUID values")?;
+            }
             vcpu.set_default_capabs().unwrap();
 
             // The vCPUs behave like devices, so add them to the list as well
