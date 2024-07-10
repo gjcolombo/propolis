@@ -224,7 +224,12 @@ impl ServerSpecBuilder {
                 },
             )?;
 
-        let mut builder = SpecBuilder::new(properties.vcpus, properties.memory);
+        let mut builder = SpecBuilder::new(
+            properties.vcpus,
+            properties.memory,
+            properties.platform,
+        );
+
         if enable_pcie {
             builder.enable_pcie();
         }

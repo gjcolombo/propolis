@@ -488,6 +488,14 @@
               }
             ]
           },
+          "cpuid": {
+            "description": "The VM's CPUID setting.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Cpuid"
+              }
+            ]
+          },
           "cpus": {
             "description": "The number of virtual logical processors attached to this VM.",
             "type": "integer",
@@ -503,6 +511,7 @@
         },
         "required": [
           "chipset",
+          "cpuid",
           "cpus",
           "memory_mb"
         ],
@@ -826,6 +835,101 @@
             "additionalProperties": false
           }
         ]
+      },
+      "Cpuid": {
+        "description": "The CPUID values to display to the guest.",
+        "oneOf": [
+          {
+            "description": "Use bhyve's default CPUID values.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "bhyve_default"
+                ]
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "description": "Use an explicit set of CPUID values.",
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "enum": [
+                  "entries"
+                ]
+              },
+              "value": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CpuidEntry"
+                }
+              }
+            },
+            "required": [
+              "type",
+              "value"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "CpuidEntry": {
+        "description": "A single CPUID entry.",
+        "type": "object",
+        "properties": {
+          "eax": {
+            "description": "The value to return in eax.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "ebx": {
+            "description": "The value to return in ebx.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "ecx": {
+            "description": "The value to return in ecx.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "edx": {
+            "description": "The value to return in edx.",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "leaf": {
+            "description": "The leaf/function ID (passed in eax).",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          },
+          "subleaf": {
+            "nullable": true,
+            "description": "An optional subleaf/index ID (passed in ecx).",
+            "type": "integer",
+            "format": "uint32",
+            "minimum": 0
+          }
+        },
+        "required": [
+          "eax",
+          "ebx",
+          "ecx",
+          "edx",
+          "leaf"
+        ],
+        "additionalProperties": false
       },
       "CrucibleOpts": {
         "type": "object",

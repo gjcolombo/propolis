@@ -5,7 +5,7 @@
 use std::collections::BTreeSet;
 
 use crate::types::{
-    Board, Chipset, ComponentV0, I440Fx, InstanceSpecV0, PciPath,
+    Board, Chipset, ComponentV0, Cpuid, I440Fx, InstanceSpecV0, PciPath,
     SerialPortNumber,
 };
 
@@ -38,6 +38,7 @@ impl SpecBuilder {
             cpus,
             memory_mb,
             chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
+            cpuid: Cpuid::BhyveDefault, // TODO(gjc)
         };
 
         Self {

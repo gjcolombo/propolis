@@ -29,7 +29,7 @@ use propolis_client::{
     types::{
         DiskRequest, InstanceEnsureRequest, InstanceMigrateInitiateRequest,
         InstanceProperties, InstanceStateRequested, InstanceVcrReplace,
-        MigrationState,
+        MigrationState, VirtualPlatform,
     },
     Client,
 };
@@ -234,6 +234,7 @@ async fn new_instance(
         bootrom_id: Uuid::default(),
         memory,
         vcpus,
+        platform: VirtualPlatform::OxideMvp, // TODO(gjc)
     };
 
     let request = InstanceEnsureRequest {

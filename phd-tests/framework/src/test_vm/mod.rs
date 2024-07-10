@@ -26,7 +26,7 @@ use propolis_client::{
         InstanceMigrateStatusResponse, InstanceProperties,
         InstanceSerialConsoleHistoryResponse, InstanceSpecEnsureRequest,
         InstanceSpecGetResponse, InstanceState, InstanceStateRequested,
-        MigrationState, VersionedInstanceSpec,
+        MigrationState, VersionedInstanceSpec, VirtualPlatform,
     },
 };
 use propolis_client::{Client, ResponseValue};
@@ -298,6 +298,7 @@ impl TestVm {
             bootrom_id: Uuid::default(),
             memory: memory_mib,
             vcpus,
+            platform: VirtualPlatform::OxideMvp,
         };
 
         let versioned_spec =

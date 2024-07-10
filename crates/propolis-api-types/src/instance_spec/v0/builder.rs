@@ -7,10 +7,11 @@
 use std::collections::BTreeSet;
 
 use crate::instance_spec::{
-    components::{self, devices::SerialPortNumber},
+    components::{self, board::Cpuid, devices::SerialPortNumber},
     v0::*,
     PciPath,
 };
+use oxide_virtual_platforms::VirtualPlatform;
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -35,13 +36,17 @@ pub struct SpecBuilder {
 }
 
 impl SpecBuilder {
-    pub fn new(cpus: u8, memory_mb: u64) -> Self {
+    pub fn new(cpus: u8, memory_mb: u64, platform: VirtualPlatform) -> Self {
         let board = components::board::Board {
             cpus,
             memory_mb,
             chipset: components::board::Chipset::I440Fx(
                 components::board::I440Fx { enable_pcie: false },
             ),
+            cpuid: match platform {
+                VirtualPlatform::OxideMvp => Cpuid::BhyveDefault,
+                VirtualPlatform::MilanV1_0 => todo!("gjc"),
+            },
         };
 
         Self {
