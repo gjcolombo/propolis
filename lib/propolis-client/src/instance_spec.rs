@@ -38,7 +38,7 @@ impl SpecBuilder {
             cpus,
             memory_mb,
             chipset: Chipset::I440Fx(I440Fx { enable_pcie: false }),
-            cpuid: Cpuid::BhyveDefault, // TODO(gjc)
+            cpuid: Cpuid::BhyveDefault,
         };
 
         Self {

@@ -50,9 +50,7 @@ use serde::{Deserialize, Serialize};
 /// platforms will have an "AMD Milan-compatible" guest CPU platform, but
 /// different platforms in the family may differ in the specific features
 /// they expose to guests.
-#[derive(
-    Clone, Copy, PartialEq, Eq, Debug, JsonSchema, Serialize, Deserialize,
-)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[cfg_attr(test, derive(strum::EnumIter))]
 pub enum Family {
     /// The initial Oxide virtual platform, provided for compatibility with
@@ -99,23 +97,11 @@ impl FromStr for Family {
     }
 }
 
-/// A virtual platform's CPU platform describes the CPU features the platform
-/// presents to guest software via the CPUID instruction.
-#[derive(
-    Clone, Copy, PartialEq, Eq, Debug, JsonSchema, Serialize, Deserialize,
-)]
-pub enum CpuPlatform {
-    /// Use the default CPU platform provided by bhyve.
-    BhyveDefault,
-
-    /// Version 1.0 of an AMD Milan-compatible CPU platform.
-    MilanV1_0,
-}
-
 #[derive(
     Clone, Copy, PartialEq, Eq, Debug, JsonSchema, Serialize, Deserialize,
 )]
 #[cfg_attr(test, derive(strum::EnumIter))]
+#[serde(rename_all = "snake_case")]
 pub enum VirtualPlatform {
     OxideMvp,
     MilanV1_0,
@@ -126,13 +112,6 @@ impl VirtualPlatform {
         match self {
             Self::OxideMvp => Family::OxideMvp,
             Self::MilanV1_0 => Family::Milan,
-        }
-    }
-
-    pub fn cpu_platform(&self) -> CpuPlatform {
-        match self {
-            Self::OxideMvp => CpuPlatform::BhyveDefault,
-            Self::MilanV1_0 => CpuPlatform::MilanV1_0,
         }
     }
 

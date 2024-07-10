@@ -1928,8 +1928,8 @@
       "VirtualPlatform": {
         "type": "string",
         "enum": [
-          "OxideMvp",
-          "MilanV1_0"
+          "oxide_mvp",
+          "milan_v1_0"
         ]
       },
       "VolumeConstructionRequest": {

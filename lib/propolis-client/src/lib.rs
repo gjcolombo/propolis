@@ -19,8 +19,17 @@ progenitor::generate_api!(
         PciPath = { derives = [
             Copy, Clone, Debug, Ord, Eq, PartialEq, PartialOrd, Serialize, Deserialize
         ] },
+    },
+    // Allow direct use of the virtual platform type to get "free" access to its
+    // `FromStr` impl. (This also keeps Progenitor from stripping the
+    // major/minor version delimiter from the enum variant names.)
+    replace = {
+        VirtualPlatform = oxide_virtual_platforms::VirtualPlatform,
     }
 );
 
 pub mod instance_spec;
 pub mod support;
+
+// Re-export the virtual platform type since it appears in the generated API.
+pub use oxide_virtual_platforms::VirtualPlatform;

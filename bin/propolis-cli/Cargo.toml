@@ -10,6 +10,7 @@ clap = { workspace = true, features = ["derive"] }
 futures.workspace = true
 libc.workspace = true
 newtype-uuid.workspace = true
+oxide_virtual_platforms.workspace = true
 propolis-client.workspace = true
 slog.workspace = true
 slog-async.workspace = true

@@ -26,8 +26,9 @@ use propolis_client::{
         InstanceMigrateStatusResponse, InstanceProperties,
         InstanceSerialConsoleHistoryResponse, InstanceSpecEnsureRequest,
         InstanceSpecGetResponse, InstanceState, InstanceStateRequested,
-        MigrationState, VersionedInstanceSpec, VirtualPlatform,
+        MigrationState, VersionedInstanceSpec,
     },
+    VirtualPlatform,
 };
 use propolis_client::{Client, ResponseValue};
 use thiserror::Error;

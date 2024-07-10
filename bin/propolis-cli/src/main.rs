@@ -29,9 +29,9 @@ use propolis_client::{
     types::{
         DiskRequest, InstanceEnsureRequest, InstanceMigrateInitiateRequest,
         InstanceProperties, InstanceStateRequested, InstanceVcrReplace,
-        MigrationState, VirtualPlatform,
+        MigrationState,
     },
-    Client,
+    Client, VirtualPlatform,
 };
 
 #[derive(Debug, Parser)]
@@ -89,6 +89,9 @@ enum Command {
         /// A UUID to use for the instance's project, attached to instance metrics.
         #[clap(long)]
         project_id: Option<TypedUuid<ProjectKind>>,
+
+        #[clap(long)]
+        guest_platform: Option<VirtualPlatform>,
     },
 
     /// Get the properties of a propolis instance
@@ -219,6 +222,7 @@ async fn new_instance(
     cloud_init_bytes: Option<String>,
     silo_id: TypedUuid<SiloKind>,
     project_id: TypedUuid<ProjectKind>,
+    guest_platform: VirtualPlatform,
 ) -> anyhow::Result<()> {
     let properties = InstanceProperties {
         id,
@@ -234,7 +238,7 @@ async fn new_instance(
         bootrom_id: Uuid::default(),
         memory,
         vcpus,
-        platform: VirtualPlatform::OxideMvp, // TODO(gjc)
+        platform: guest_platform,
     };
 
     let request = InstanceEnsureRequest {
@@ -634,6 +638,7 @@ async fn main() -> anyhow::Result<()> {
             cloud_init,
             silo_id,
             project_id,
+            guest_platform,
         } => {
             let disks = if let Some(crucible_disks) = crucible_disks {
                 parse_json_file(&crucible_disks)?
@@ -658,6 +663,7 @@ async fn main() -> anyhow::Result<()> {
                 cloud_init_bytes,
                 silo_id.unwrap_or_else(TypedUuid::new_v4),
                 project_id.unwrap_or_else(TypedUuid::new_v4),
+                guest_platform.unwrap_or(VirtualPlatform::OxideMvp),
             )
             .await?
         }

@@ -45,7 +45,7 @@ impl SpecBuilder {
             ),
             cpuid: match platform {
                 VirtualPlatform::OxideMvp => Cpuid::BhyveDefault,
-                VirtualPlatform::MilanV1_0 => todo!("gjc"),
+                VirtualPlatform::MilanV1_0 => Cpuid::BhyveDefault, // TODO(gjc)
             },
         };
 
