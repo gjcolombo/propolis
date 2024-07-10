@@ -45,6 +45,7 @@ bhyve_api = { path = "crates/bhyve-api" }
 bhyve_api_sys = { path = "crates/bhyve-api/sys" }
 cpuid_profile_config = { path = "crates/cpuid-profile-config" }
 dladm = { path = "crates/dladm" }
+oxide_virtual_platforms = { path = "crates/oxide-virtual-platforms" }
 propolis-server-config = { path = "crates/propolis-server-config" }
 propolis_api_types = { path = "crates/propolis-api-types" }
 propolis_types = { path = "crates/propolis-types" }

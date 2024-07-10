@@ -2838,6 +2838,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "oxide_virtual_platforms"
+version = "0.0.0"
+dependencies = [
+ "schemars",
+ "serde",
+ "strum",
+]
+
+[[package]]
 name = "oximeter"
 version = "0.1.0"
 source = "git+https://github.com/oxidecomputer/omicron?branch=main#116590c584ccfe222333fcf581dfd2d331c6f74a"

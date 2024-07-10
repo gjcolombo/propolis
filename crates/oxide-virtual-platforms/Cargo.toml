@@ -1,0 +1,15 @@
+[package]
+name = "oxide_virtual_platforms"
+version = "0.0.0"
+license = "MPL-2.0"
+edition = "2021"
+
+[lib]
+doctest = false
+
+[dependencies]
+schemars = { workspace = true, features = [ "uuid1" ] }
+serde.workspace = true
+
+[dev-dependencies]
+strum = { workspace = true, features = [ "derive" ] }
