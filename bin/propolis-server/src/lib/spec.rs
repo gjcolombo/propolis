@@ -267,7 +267,7 @@ impl ServerSpecBuilder {
         disk: &DiskRequest,
     ) -> Result<(), ServerSpecBuilderError> {
         let pci_path = slot_to_pci_path(disk.slot, SlotType::Disk)?;
-        let backend_name = disk.name.clone();
+        let backend_name = format!("{}_backend", disk.name);
 
         let backend_spec =
             ComponentV0::CrucibleBackend(CrucibleStorageBackend {
@@ -642,7 +642,7 @@ mod test {
         let mut builder = default_spec_builder().unwrap();
 
         // Adding the same disk device twice should fail.
-        assert!(builder
+        builder
             .add_disk_from_request(&DiskRequest {
                 name: "disk1".to_string(),
                 slot: Slot(0),
@@ -651,10 +651,10 @@ mod test {
                 volume_construction_request: VolumeConstructionRequest::File {
                     id: Uuid::new_v4(),
                     block_size: 512,
-                    path: "disk1.img".to_string()
+                    path: "disk1.img".to_string(),
                 },
             })
-            .is_ok());
+            .unwrap();
         assert!(matches!(
             builder
                 .add_disk_from_request(&DiskRequest {
@@ -685,10 +685,16 @@ mod test {
         assert!(builder.add_serial_port(SerialPortNumber::Com2).is_ok());
         assert!(builder.add_serial_port(SerialPortNumber::Com3).is_ok());
         assert!(builder.add_serial_port(SerialPortNumber::Com4).is_ok());
+
+        // The outer builder statically maps serial ports to component names, so
+        // attempting to reuse a serial port will produce a component name
+        // conflict in addition to a serial port usage conflict. Let the inner
+        // builder decide which of these to return first.
         assert!(matches!(
             builder.add_serial_port(SerialPortNumber::Com1).err(),
             Some(ServerSpecBuilderError::InnerBuilderError(
-                SpecBuilderError::SerialPortInUse(_)
+                SpecBuilderError::NameInUse(_)
+                    | SpecBuilderError::SerialPortInUse(_)
             ))
         ));
     }
