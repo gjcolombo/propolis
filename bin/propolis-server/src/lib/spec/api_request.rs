@@ -16,7 +16,7 @@ use propolis_api_types::{
             devices::{NvmeDisk, VirtioDisk, VirtioNic},
         },
         v0::{
-            NetworkBackendV0, NetworkDeviceV0, StorageBackendV0,
+            NetworkDeviceV0, StorageBackendV0,
             StorageDeviceV0,
         },
         PciPath,
@@ -25,7 +25,7 @@ use propolis_api_types::{
 };
 use thiserror::Error;
 
-use super::{Nic, Disk};
+use super::{Disk, Nic};
 
 #[derive(Debug, Error)]
 pub(crate) enum DeviceRequestError {
@@ -100,12 +100,7 @@ pub(super) fn parse_disk_from_request(
         readonly: disk.read_only,
     });
 
-    Ok(Disk {
-        device_name,
-        device_spec,
-        backend_name,
-        backend_spec,
-    })
+    Ok(Disk { device_name, device_spec, backend_name, backend_spec })
 }
 
 pub(super) fn parse_cloud_init_from_request(
@@ -123,12 +118,7 @@ pub(super) fn parse_cloud_init_from_request(
         pci_path,
     });
 
-    Ok(Disk {
-        device_name,
-        device_spec,
-        backend_name,
-        backend_spec,
-    })
+    Ok(Disk { device_name, device_spec, backend_name, backend_spec })
 }
 
 pub(super) fn parse_nic_from_request(
@@ -141,14 +131,6 @@ pub(super) fn parse_nic_from_request(
         pci_path,
     });
 
-    let backend_spec = NetworkBackendV0::Virtio(VirtioNetworkBackend {
-        vnic_name: nic.name.to_string(),
-    });
-
-    Ok(Nic {
-        device_name,
-        device_spec,
-        backend_name,
-        backend_spec,
-    })
+    let backend_spec = VirtioNetworkBackend { vnic_name: nic.name.to_string() };
+    Ok(Nic { device_name, device_spec, backend_name, backend_spec })
 }
