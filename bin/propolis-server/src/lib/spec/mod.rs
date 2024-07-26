@@ -15,6 +15,7 @@
 
 use propolis_api_types::instance_spec::{
     components::{
+        backends::VirtioNetworkBackend,
         board::Board,
         devices::{
             PciPciBridge as PciPciBridgeSpec, QemuPvpanic as QemuPvpanicSpec,
@@ -37,19 +38,19 @@ mod config_toml;
 
 #[derive(Clone, Debug, Default)]
 pub struct Spec {
-    board: Board,
-    disks: Vec<Disk>,
-    nics: Vec<Nic>,
+    pub board: Board,
+    pub disks: Vec<Disk>,
+    pub nics: Vec<Nic>,
 
     // TODO(gjc): preserve device names for identification purposes
-    serial: [SerialPort; 4],
+    pub serial: [SerialPort; 4],
 
     // TODO(gjc): preserve device names for identification purposes
-    pci_pci_bridges: Vec<PciPciBridge>,
-    pvpanic: Option<QemuPvpanic>,
+    pub pci_pci_bridges: Vec<PciPciBridge>,
+    pub pvpanic: Option<QemuPvpanic>,
 
     #[cfg(feature = "falcon")]
-    softnpu: SoftNpu,
+    pub softnpu: SoftNpu,
 }
 
 #[derive(Clone, Debug)]
@@ -65,7 +66,7 @@ pub struct Nic {
     pub device_name: String,
     pub device_spec: NetworkDeviceV0,
     pub backend_name: String,
-    pub backend_spec: NetworkBackendV0,
+    pub backend_spec: VirtioNetworkBackend,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
