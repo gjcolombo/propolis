@@ -8,9 +8,7 @@ use crate::{
     disk::{self, DiskConfig},
     guest_os::GuestOsKind,
 };
-use propolis_client::types::{
-    InstanceMetadata, InstanceSpecV0, StorageBackendV0,
-};
+use propolis_client::types::{ComponentV0, InstanceMetadata, InstanceSpecV0};
 use uuid::Uuid;
 
 /// The set of objects needed to start and run a guest in a `TestVm`.
@@ -46,16 +44,10 @@ impl VmSpec {
             };
 
             let (backend_name, backend_spec) = disk.backend_spec();
-            match self
-                .instance_spec
-                .backends
-                .storage_backends
-                .get(&backend_name)
-            {
-                Some(StorageBackendV0::Crucible(_)) => {
+            match self.instance_spec.components.get(&backend_name) {
+                Some(ComponentV0::CrucibleStorageBackend(_)) => {
                     self.instance_spec
-                        .backends
-                        .storage_backends
+                        .components
                         .insert(backend_name, backend_spec);
                 }
                 Some(_) | None => {}
