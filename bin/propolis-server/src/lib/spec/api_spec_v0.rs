@@ -6,7 +6,7 @@
 //! crate to the internal [`super::Spec`] representation.
 
 use propolis_api_types::instance_spec::{
-    components::devices::{SerialPort as SerialPortDesc, SerialPortNumber},
+    components::devices::SerialPort as SerialPortDesc,
     v0::{InstanceSpecV0, NetworkBackendV0, NetworkDeviceV0, StorageDeviceV0},
 };
 use thiserror::Error;
@@ -78,19 +78,12 @@ impl From<Spec> for InstanceSpecV0 {
             assert!(_old.is_none());
         }
 
-        for (num, user) in val.serial.iter() {
-            if *user == SerialPortUser::Standard {
-                let name = match num {
-                    SerialPortNumber::Com1 => "com1",
-                    SerialPortNumber::Com2 => "com2",
-                    SerialPortNumber::Com3 => "com3",
-                    SerialPortNumber::Com4 => "com4",
-                };
-
+        for (name, desc) in val.serial {
+            if desc.user == SerialPortUser::Standard {
                 let _old = spec
                     .devices
                     .serial_ports
-                    .insert(name.to_owned(), SerialPortDesc { num: *num });
+                    .insert(name, SerialPortDesc { num: desc.num });
 
                 assert!(_old.is_none());
             }
@@ -238,9 +231,8 @@ impl TryFrom<InstanceSpecV0> for Spec {
             return Err(ApiSpecParseError::BackendNotUsed(backend.to_owned()));
         }
 
-        // TODO(gjc) do more to preserve names
-        for serial_port in value.devices.serial_ports.values() {
-            builder.add_serial_port(serial_port.num)?;
+        for (name, serial_port) in value.devices.serial_ports {
+            builder.add_serial_port(name, serial_port.num)?;
         }
 
         for (name, bridge) in value.devices.pci_pci_bridges {
