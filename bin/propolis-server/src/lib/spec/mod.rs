@@ -27,9 +27,10 @@ use propolis_api_types::instance_spec::{
             SerialPortNumber, VirtioDisk, VirtioNic,
         },
     },
-    v0::{StorageBackendV0, StorageDeviceV0},
+    v0::ComponentV0,
     PciPath,
 };
+use thiserror::Error;
 
 #[cfg(feature = "falcon")]
 use propolis_api_types::instance_spec::components::{
@@ -41,6 +42,10 @@ mod api_request;
 pub(crate) mod api_spec_v0;
 pub(crate) mod builder;
 mod config_toml;
+
+#[derive(Debug, Error)]
+#[error("input component type can't convert to output type")]
+pub struct ComponentTypeMismatch;
 
 #[derive(Clone, Debug, Default)]
 pub(crate) struct Spec {
@@ -88,7 +93,7 @@ impl StorageDevice {
     }
 }
 
-impl From<StorageDevice> for StorageDeviceV0 {
+impl From<StorageDevice> for ComponentV0 {
     fn from(value: StorageDevice) -> Self {
         match value {
             StorageDevice::Virtio(d) => Self::VirtioDisk(d),
@@ -97,11 +102,14 @@ impl From<StorageDevice> for StorageDeviceV0 {
     }
 }
 
-impl From<StorageDeviceV0> for StorageDevice {
-    fn from(value: StorageDeviceV0) -> Self {
+impl TryFrom<ComponentV0> for StorageDevice {
+    type Error = ComponentTypeMismatch;
+
+    fn try_from(value: ComponentV0) -> Result<Self, Self::Error> {
         match value {
-            StorageDeviceV0::VirtioDisk(d) => Self::Virtio(d),
-            StorageDeviceV0::NvmeDisk(d) => Self::Nvme(d),
+            ComponentV0::VirtioDisk(d) => Ok(Self::Virtio(d)),
+            ComponentV0::NvmeDisk(d) => Ok(Self::Nvme(d)),
+            _ => Err(ComponentTypeMismatch),
         }
     }
 }
@@ -131,22 +139,25 @@ impl StorageBackend {
     }
 }
 
-impl From<StorageBackend> for StorageBackendV0 {
+impl From<StorageBackend> for ComponentV0 {
     fn from(value: StorageBackend) -> Self {
         match value {
-            StorageBackend::Crucible(be) => Self::Crucible(be),
-            StorageBackend::File(be) => Self::File(be),
-            StorageBackend::Blob(be) => Self::Blob(be),
+            StorageBackend::Crucible(be) => Self::CrucibleStorageBackend(be),
+            StorageBackend::File(be) => Self::FileStorageBackend(be),
+            StorageBackend::Blob(be) => Self::BlobStorageBackend(be),
         }
     }
 }
 
-impl From<StorageBackendV0> for StorageBackend {
-    fn from(value: StorageBackendV0) -> Self {
+impl TryFrom<ComponentV0> for StorageBackend {
+    type Error = ComponentTypeMismatch;
+
+    fn try_from(value: ComponentV0) -> Result<Self, Self::Error> {
         match value {
-            StorageBackendV0::Crucible(be) => Self::Crucible(be),
-            StorageBackendV0::File(be) => Self::File(be),
-            StorageBackendV0::Blob(be) => Self::Blob(be),
+            ComponentV0::CrucibleStorageBackend(be) => Ok(Self::Crucible(be)),
+            ComponentV0::FileStorageBackend(be) => Ok(Self::File(be)),
+            ComponentV0::BlobStorageBackend(be) => Ok(Self::Blob(be)),
+            _ => Err(ComponentTypeMismatch),
         }
     }
 }
