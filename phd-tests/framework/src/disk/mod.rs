@@ -13,7 +13,7 @@ use std::sync::Arc;
 use anyhow::Context;
 use camino::{Utf8Path, Utf8PathBuf};
 use in_memory::InMemoryDisk;
-use propolis_client::types::StorageBackendV0;
+use propolis_client::types::ComponentV0;
 use thiserror::Error;
 
 use crate::{
@@ -70,7 +70,7 @@ impl BlockSize {
 /// A trait for functions exposed by all disk backends (files, Crucible, etc.).
 pub trait DiskConfig: std::fmt::Debug + Send + Sync {
     /// Yields the backend spec for this disk's storage backend.
-    fn backend_spec(&self) -> (String, StorageBackendV0);
+    fn backend_spec(&self) -> (String, ComponentV0);
 
     /// Yields the guest OS kind of the guest image the disk was created from,
     /// or `None` if the disk was not created from a guest image.
