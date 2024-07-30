@@ -72,6 +72,13 @@ impl StorageDevice {
             StorageDevice::Nvme(disk) => disk.pci_path,
         }
     }
+
+    pub fn backend_name(&self) -> &str {
+        match self {
+            StorageDevice::Virtio(disk) => &disk.backend_name,
+            StorageDevice::Nvme(disk) => &disk.backend_name,
+        }
+    }
 }
 
 impl From<StorageDevice> for StorageDeviceV0 {
@@ -122,14 +129,12 @@ impl From<StorageBackendV0> for StorageBackend {
 #[derive(Clone, Debug)]
 pub struct Disk {
     pub device_spec: StorageDevice,
-    pub backend_name: String,
     pub backend_spec: StorageBackend,
 }
 
 #[derive(Clone, Debug)]
 pub struct Nic {
     pub device_spec: VirtioNic,
-    pub backend_name: String,
     pub backend_spec: VirtioNetworkBackend,
 }
 

@@ -47,6 +47,7 @@ impl From<Spec> for InstanceSpecV0 {
 
         spec.devices.board = val.board;
         for (disk_name, disk) in val.disks {
+            let backend_name = disk.device_spec.backend_name().to_owned();
             let _old = spec
                 .devices
                 .storage_devices
@@ -57,12 +58,13 @@ impl From<Spec> for InstanceSpecV0 {
             let _old = spec
                 .backends
                 .storage_backends
-                .insert(disk.backend_name, disk.backend_spec.into());
+                .insert(backend_name, disk.backend_spec.into());
 
             assert!(_old.is_none());
         }
 
         for (nic_name, nic) in val.nics {
+            let backend_name = nic.device_spec.backend_name.clone();
             let _old = spec
                 .devices
                 .network_devices
@@ -71,7 +73,7 @@ impl From<Spec> for InstanceSpecV0 {
             assert!(_old.is_none());
 
             let _old = spec.backends.network_backends.insert(
-                nic.backend_name,
+                backend_name,
                 NetworkBackendV0::Virtio(nic.backend_spec),
             );
 
@@ -136,7 +138,7 @@ impl TryFrom<InstanceSpecV0> for Spec {
                 StorageDeviceV0::NvmeDisk(disk) => &disk.backend_name,
             };
 
-            let (backend_name, backend_spec) = value
+            let (_, backend_spec) = value
                 .backends
                 .storage_backends
                 .remove_entry(backend_name)
@@ -151,7 +153,6 @@ impl TryFrom<InstanceSpecV0> for Spec {
                 device_name,
                 Disk {
                     device_spec: device_spec.into(),
-                    backend_name,
                     backend_spec: backend_spec.into(),
                 },
             )?;
@@ -164,7 +165,7 @@ impl TryFrom<InstanceSpecV0> for Spec {
         for (device_name, device_spec) in value.devices.network_devices {
             let NetworkDeviceV0::VirtioNic(device_spec) = device_spec;
             let backend_name = &device_spec.backend_name;
-            let (backend_name, backend_spec) = value
+            let (_, backend_spec) = value
                 .backends
                 .network_backends
                 .remove_entry(backend_name)
@@ -183,7 +184,7 @@ impl TryFrom<InstanceSpecV0> for Spec {
 
             builder.add_network_device(
                 device_name,
-                Nic { device_spec, backend_name, backend_spec },
+                Nic { device_spec, backend_spec },
             )?;
         }
 
