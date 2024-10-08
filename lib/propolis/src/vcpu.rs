@@ -12,6 +12,7 @@ use crate::cpuid;
 use crate::exits::*;
 use crate::migrate::*;
 use crate::mmio::MmioBus;
+use crate::msr::MsrManager;
 use crate::pio::PioBus;
 use crate::tasks;
 use crate::vmm::VmmHdl;
@@ -53,6 +54,7 @@ pub struct Vcpu {
     pub id: i32,
     pub bus_mmio: Arc<MmioBus>,
     pub bus_pio: Arc<PioBus>,
+    msr: Arc<MsrManager>,
 }
 
 impl Vcpu {
@@ -62,8 +64,9 @@ impl Vcpu {
         id: i32,
         bus_mmio: Arc<MmioBus>,
         bus_pio: Arc<PioBus>,
+        msr: Arc<MsrManager>,
     ) -> Arc<Self> {
-        Arc::new(Self { hdl, id, bus_mmio, bus_pio })
+        Arc::new(Self { hdl, id, bus_mmio, bus_pio, msr })
     }
 
     /// ID of the virtual CPU.
@@ -432,9 +435,49 @@ impl Vcpu {
                     })
                     .ok(),
             },
-            VmExitKind::Rdmsr(_) | VmExitKind::Wrmsr(_, _) => {
-                // Leave it to the caller to emulate MSRs unhandled by the kernel
-                None
+            VmExitKind::Rdmsr(msr) => {
+                use crate::msr::*;
+                let mut out = 0u64;
+                match self.msr.rdmsr(MsrId(msr), &mut out) {
+                    Ok(MsrResponse::Handled) => {
+                        self.set_reg(
+                            bhyve_api::vm_reg_name::VM_REG_GUEST_RAX,
+                            u64::from(out as u32),
+                        )
+                        .unwrap();
+                        self.set_reg(
+                            bhyve_api::vm_reg_name::VM_REG_GUEST_RDX,
+                            out >> 32,
+                        )
+                        .unwrap();
+                    }
+                    Ok(MsrResponse::GpException) => {
+                        todo!("gjc");
+                    }
+                    Err(e) => {
+                        unreachable!(
+                            "all 32-bit MSR IDs should be handled by the MSR \
+                            manager (error: {e:?}"
+                        );
+                    }
+                }
+                Some(VmEntry::Run)
+            }
+            VmExitKind::Wrmsr(msr, val) => {
+                use crate::msr::*;
+                match self.msr.wrmsr(MsrId(msr), val) {
+                    Ok(MsrResponse::Handled) => {}
+                    Ok(MsrResponse::GpException) => {
+                        todo!("gjc");
+                    }
+                    Err(e) => {
+                        unreachable!(
+                            "all 32-bit MSR IDs should be handled by the MSR \
+                            manager (error: {e:?}"
+                        );
+                    }
+                }
+                Some(VmEntry::Run)
             }
             VmExitKind::Debug => {
                 // Until there is an interface to delay until a vCPU is no
