@@ -395,6 +395,18 @@ impl Vcpu {
         unsafe { self.hdl.ioctl(bhyve_api::VM_INJECT_NMI, &mut vm_nmi) }
     }
 
+    /// Send a general protection fault (#GP) to the vcpu.
+    pub fn inject_gp(&self) -> Result<()> {
+        let mut vm_excp = bhyve_api::vm_exception {
+            cpuid: self.cpuid(),
+            vector: i32::from(bits::IDT_GP),
+            error_code: 0,
+            error_code_valid: 0,
+            restart_instruction: 1,
+        };
+        unsafe { self.hdl.ioctl(bhyve_api::VM_INJECT_EXCEPTION, &mut vm_excp) }
+    }
+
     /// Process [`VmExit`] in the context of this vCPU, emitting a [`VmEntry`]
     /// if the parameters of the exit were such that they could be handled.
     pub fn process_vmexit(&self, exit: &VmExit) -> Option<VmEntry> {
@@ -452,7 +464,7 @@ impl Vcpu {
                         .unwrap();
                     }
                     Ok(MsrResponse::GpException) => {
-                        todo!("gjc");
+                        self.inject_gp().unwrap();
                     }
                     Err(e) => {
                         unreachable!(
@@ -468,7 +480,7 @@ impl Vcpu {
                 match self.msr.wrmsr(MsrId(msr), val) {
                     Ok(MsrResponse::Handled) => {}
                     Ok(MsrResponse::GpException) => {
-                        todo!("gjc");
+                        self.inject_gp().unwrap();
                     }
                     Err(e) => {
                         unreachable!(
@@ -1383,4 +1395,6 @@ pub mod migrate {
 mod bits {
     pub const MSR_DEBUGCTL: u32 = 0x1d9;
     pub const MSR_EFER: u32 = 0xc0000080;
+
+    pub const IDT_GP: u8 = 0xd;
 }
