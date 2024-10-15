@@ -12,6 +12,10 @@ use crate::cpuid;
 use crate::exits::*;
 use crate::migrate::*;
 use crate::mmio::MmioBus;
+use crate::msr::MsrId;
+use crate::msr::MsrManager;
+use crate::msr::RdmsrResult;
+use crate::msr::WrmsrResult;
 use crate::pio::PioBus;
 use crate::tasks;
 use crate::vmm::VmmHdl;
@@ -53,6 +57,7 @@ pub struct Vcpu {
     pub id: i32,
     pub bus_mmio: Arc<MmioBus>,
     pub bus_pio: Arc<PioBus>,
+    msr: Arc<MsrManager>,
 }
 
 impl Vcpu {
@@ -62,8 +67,9 @@ impl Vcpu {
         id: i32,
         bus_mmio: Arc<MmioBus>,
         bus_pio: Arc<PioBus>,
+        msr: Arc<MsrManager>,
     ) -> Arc<Self> {
-        Arc::new(Self { hdl, id, bus_mmio, bus_pio })
+        Arc::new(Self { hdl, id, bus_mmio, bus_pio, msr })
     }
 
     /// ID of the virtual CPU.
@@ -392,6 +398,18 @@ impl Vcpu {
         unsafe { self.hdl.ioctl(bhyve_api::VM_INJECT_NMI, &mut vm_nmi) }
     }
 
+    /// Send a general protection fault (#GP) to the vcpu.
+    pub fn inject_gp(&self) -> Result<()> {
+        let mut vm_excp = bhyve_api::vm_exception {
+            cpuid: self.cpuid(),
+            vector: bits::IDT_GP,
+            error_code: 0,
+            error_code_valid: 0,
+            restart_instruction: 1,
+        };
+        unsafe { self.hdl.ioctl(bhyve_api::VM_INJECT_EXCEPTION, &mut vm_excp) }
+    }
+
     /// Process [`VmExit`] in the context of this vCPU, emitting a [`VmEntry`]
     /// if the parameters of the exit were such that they could be handled.
     pub fn process_vmexit(&self, exit: &VmExit) -> Option<VmEntry> {
@@ -432,9 +450,38 @@ impl Vcpu {
                     })
                     .ok(),
             },
-            VmExitKind::Rdmsr(_) | VmExitKind::Wrmsr(_, _) => {
-                // Leave it to the caller to emulate MSRs unhandled by the kernel
-                None
+            VmExitKind::Rdmsr(msr) => {
+                match self
+                    .msr
+                    .rdmsr(u32::try_from(self.id).unwrap(), MsrId(msr))?
+                {
+                    RdmsrResult::Value(out) => {
+                        self.set_reg(
+                            bhyve_api::vm_reg_name::VM_REG_GUEST_RAX,
+                            u64::from(out as u32),
+                        )
+                        .unwrap();
+                        self.set_reg(
+                            bhyve_api::vm_reg_name::VM_REG_GUEST_RDX,
+                            out >> 32,
+                        )
+                        .unwrap();
+                    }
+                    RdmsrResult::GpException => {
+                        self.inject_gp().unwrap();
+                    }
+                }
+                Some(VmEntry::Run)
+            }
+            VmExitKind::Wrmsr(msr, value) => {
+                if let WrmsrResult::GpException = self.msr.wrmsr(
+                    u32::try_from(self.id).unwrap(),
+                    MsrId(msr),
+                    value,
+                )? {
+                    self.inject_gp().unwrap();
+                }
+                Some(VmEntry::Run)
             }
             VmExitKind::Debug => {
                 // Until there is an interface to delay until a vCPU is no
@@ -1340,4 +1387,6 @@ pub mod migrate {
 mod bits {
     pub const MSR_DEBUGCTL: u32 = 0x1d9;
     pub const MSR_EFER: u32 = 0xc0000080;
+
+    pub const IDT_GP: i32 = 0xd;
 }
