@@ -15,6 +15,12 @@ use std::{
 
 use thiserror::Error;
 
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn msr_read(vcpuid: u32, msr: u32, val: u64, handled: u8, gp: u8) {}
+    fn msr_write(vcpuid: u32, msr: u32, val: u64, handled: u8, gp: u8) {}
+}
+
 /// The 32-bit ID of a specific MSR.
 #[derive(Clone, Copy, Debug, PartialOrd, Ord, PartialEq, Eq)]
 pub struct MsrId(pub u32);
@@ -137,32 +143,60 @@ impl MsrManager {
 
     /// Handles an RDMSR to the supplied `msr`. Returns `None` if no handling
     /// discipline has been set for the target MSR.
-    pub(crate) fn rdmsr(
-        &self,
-        _vcpuid: u32,
-        msr: MsrId,
-    ) -> Option<RdmsrResult> {
-        let map = self.map.lock().unwrap();
-        let Discipline::Handle(disp) = map.get(&msr)?;
-        match disp.read {
-            Disposition::Ignore => Some(RdmsrResult::Value(0)),
-            Disposition::GpException => Some(RdmsrResult::GpException),
-        }
+    pub(crate) fn rdmsr(&self, vcpuid: u32, msr: MsrId) -> Option<RdmsrResult> {
+        let res = {
+            let map = self.map.lock().unwrap();
+            map.get(&msr).map(|discipline| {
+                let Discipline::Handle(disp) = discipline;
+                match disp.read {
+                    Disposition::Ignore => RdmsrResult::Value(0),
+                    Disposition::GpException => RdmsrResult::GpException,
+                }
+            })
+        };
+
+        probes::msr_read!(|| {
+            let (val, handled, gp) = match res {
+                None => (0, false, false),
+                Some(RdmsrResult::Value(v)) => (v, true, false),
+                Some(RdmsrResult::GpException) => (0, true, true),
+            };
+
+            (vcpuid, msr.0, val, handled as u8, gp as u8)
+        });
+
+        res
     }
 
     /// Handles an WRMSR to the supplied `msr`. Returns `None` if no handling
     /// discipline has been set for the target MSR.
     pub(crate) fn wrmsr(
         &self,
-        _vcpuid: u32,
+        vcpuid: u32,
         msr: MsrId,
-        _value: u64,
+        value: u64,
     ) -> Option<WrmsrResult> {
-        let map = self.map.lock().unwrap();
-        let Discipline::Handle(disp) = map.get(&msr)?;
-        match disp.write {
-            Disposition::Ignore => Some(WrmsrResult::Handled),
-            Disposition::GpException => Some(WrmsrResult::GpException),
-        }
+        let res = {
+            let map = self.map.lock().unwrap();
+            map.get(&msr).map(|discipline| {
+                let Discipline::Handle(disp) = discipline;
+                match disp.read {
+                    Disposition::Ignore => WrmsrResult::Handled,
+                    Disposition::GpException => WrmsrResult::GpException,
+                }
+            })
+        };
+
+        probes::msr_write!(|| {
+            let (handled, gp) = match res {
+                None => (false, false),
+                Some(WrmsrResult::Handled) => (true, false),
+                Some(WrmsrResult::GpException) => (true, true),
+            };
+
+            (vcpuid, msr.0, value, handled as u8, gp as u8)
+        });
+
+        res
     }
 }
