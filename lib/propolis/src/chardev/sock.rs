@@ -52,11 +52,15 @@ impl UDSock {
             sink_buf: pollers::SinkBuffer::new(
                 NonZeroUsize::new(BUF_SIZE).unwrap(),
             ),
-            source_buf: pollers::SourceBuffer::new(pollers::Params {
-                poll_interval: Duration::from_millis(POLL_INTERVAL_MS as u64),
-                poll_miss_thresh: POLL_MISS_THRESH,
-                buf_size: NonZeroUsize::new(BUF_SIZE).unwrap(),
-            }),
+            source_buf: pollers::SourceBuffer::new(
+                pollers::SourceBufferParams {
+                    poll_interval: Duration::from_millis(
+                        POLL_INTERVAL_MS as u64,
+                    ),
+                    poll_miss_thresh: POLL_MISS_THRESH,
+                    buf_size: NonZeroUsize::new(BUF_SIZE).unwrap(),
+                },
+            ),
         });
 
         Ok(this)

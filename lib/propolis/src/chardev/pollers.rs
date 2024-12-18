@@ -2,6 +2,10 @@
 // License, v. 2.0. If a copy of the MPL was not distributed with this
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
+//! Provides the [`SourceBuffer`] and [`SinkBuffer`] types, which provide
+//! generic buffering over character devices that might not implement their own
+//! hardware buffers.
+
 use std::collections::VecDeque;
 use std::num::NonZeroUsize;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,9 +17,18 @@ use crate::chardev::{BlockingSource, Sink, Source};
 use tokio::sync::Notify;
 use tokio::time::sleep;
 
-pub struct Params {
+/// Configuration options for [`SourceBuffer`]s.
+pub struct SourceBufferParams {
+    /// When an attempt to read from the buffer comes up empty, wait this long
+    /// before attempting to read again.
     pub poll_interval: Duration,
+
+    /// After this many failed attempts to poll the buffer, readers stop polling
+    /// and instead wait for the next byte-available notification from the
+    /// underlying byte source.
     pub poll_miss_thresh: usize,
+
+    /// The buffer size, in bytes.
     pub buf_size: NonZeroUsize,
 }
 struct SourceInner {
@@ -27,21 +40,29 @@ impl SourceInner {
         self.buf.len() == self.buf.capacity()
     }
 }
+
+/// A helper for buffering incoming data from a [`Source`].
 pub struct SourceBuffer {
+    /// Set when a byte becomes available from the underlying [`Source`] and it
+    /// was not buffered, either because the buffer became full or because
+    /// buffering was disabled entirely.
     data_ready: Notify,
     inner: Mutex<SourceInner>,
-    poll_active: AtomicBool,
-    params: Params,
+
+    /// True if incoming bytes from the underlying byte source should be
+    /// buffered in `inner`.
+    should_buffer: AtomicBool,
+    params: SourceBufferParams,
 }
 impl SourceBuffer {
-    pub fn new(params: Params) -> Arc<Self> {
+    pub fn new(params: SourceBufferParams) -> Arc<Self> {
         let this = Self {
             data_ready: Notify::new(),
             inner: Mutex::new(SourceInner {
                 buf: Vec::with_capacity(params.buf_size.get()),
                 last_poll: None,
             }),
-            poll_active: AtomicBool::new(true),
+            should_buffer: AtomicBool::new(true),
             params,
         };
         Arc::new(this)
@@ -69,9 +90,8 @@ impl SourceBuffer {
         if buf.is_empty() {
             return Some(0);
         }
-        if self.poll_active.load(Ordering::Acquire) {
-            let _ = self.leading_delay().await;
-        }
+
+        let _ = self.leading_delay().await;
         loop {
             let nread = self.read_data(buf, source);
             if nread > 0 {
@@ -82,9 +102,17 @@ impl SourceBuffer {
         }
     }
 
-    /// If we are polling this Source and the buffer is not full, we may want to
-    /// wait to let it fill further so we make fewer trips back and forth.
+    /// If less than one full polling interval has elapsed since the last time
+    /// this buffer was read, wait for a full interval to elapse or for the
+    /// buffer to become full.
     async fn leading_delay(&self) -> Option<Duration> {
+        // If buffering mode is completely disabled (because a previous read
+        // attempt was not satisfied before polling timed out), the buffer won't
+        // be filled, so there's no reason to wait here.
+        if !self.should_buffer.load(Ordering::Acquire) {
+            return None;
+        }
+
         let last_poll = {
             let inner = self.inner.lock().unwrap();
             // No delay if already full
@@ -109,38 +137,72 @@ impl SourceBuffer {
         None
     }
 
+    /// Polls the buffer waiting for data to become available according to the
+    /// polling discipline specified in the buffer's [`SourceBufferParams`].
+    ///
+    /// If no data becomes available during the polling interval, this routine
+    /// disables buffering and waits directly on the buffer's `data_ready`
+    /// notification, which will be set when data next becomes available from
+    /// the source.
     async fn wait(&self) {
-        self.poll_active.store(true, Ordering::Release);
+        // Make sure data is buffered between attempts to poll.
+        //
+        // REVIEW(gjc): Waiting until this point to set this means that if an
+        // attempt to poll fails, no new data from the source will be buffered
+        // unless someone happens to call `wait` again when no data is
+        // available. Is this intentional? It seems like it may make more sense
+        // to re-enable buffering whenever a read is satisfied.
+        self.should_buffer.store(true, Ordering::Release);
         let mut misses = 0;
         loop {
             tokio::select! {
                 _ = sleep(self.params.poll_interval) => {
                     let mut inner = self.inner.lock().unwrap();
-                    if inner.buf.is_empty() {
-                        inner.last_poll = Some(Instant::now());
-                        misses += 1;
-                        if misses > self.params.poll_miss_thresh {
-                            self.poll_active.store(false, Ordering::Release);
-                            break;
-                        }
-                    } else {
+
+                    // If data is available, buffering worked, so leave it
+                    // enabled and return to allow the caller to read the
+                    // buffered data.
+                    if !inner.buf.is_empty() {
                         return;
                     }
+
+                    // This attempt to poll failed. If polling has now failed
+                    // too many times, disable buffering, then drop the lock and
+                    // sign up to be notified directly when new bytes are
+                    // available.
+                    //
+                    // N.B. It's important to clear `should_buffer` while
+                    // holding the `inner` lock; otherwise it's possible for the
+                    // `notify` function to miss the fact that it needs to
+                    // notify this waiter. See `notify` for details.
+                    inner.last_poll = Some(Instant::now());
+                    misses += 1;
+                    if misses > self.params.poll_miss_thresh {
+                        self.should_buffer.store(false, Ordering::Release);
+                        break;
+                    }
                 },
+
+                // Return early without waiting for the next polling attempt if
+                // the buffer is already full (or if buffering is disabled and
+                // there's data available).
                 _ = self.data_ready.notified() => {
                     return;
                 },
             };
         }
 
-        // We have exceeded the miss threshold
         self.data_ready.notified().await;
     }
 
     pub fn read_data(&self, buf: &mut [u8], source: &dyn Source) -> usize {
         let mut inner = self.inner.lock().unwrap();
         let mut copied = copy_and_consume(&mut inner.buf, buf);
-        // Can also attempt to read direct from the Source
+
+        // Also read data directly from the underlying data source. This is not
+        // optional: if a reader tried to poll the buffer, came up empty, and
+        // then disabled buffering, then new calls to `notify` won't actually
+        // copy the newly-available data into the buffer.
         if copied < buf.len() {
             if let Some(b) = source.read() {
                 buf[copied] = b;
@@ -151,21 +213,59 @@ impl SourceBuffer {
         copied
     }
 
+    /// Called when the [`Source`] that was passed to [`Self::attach`] has a
+    /// byte available to read.
     fn notify(&self, source: &dyn Source) {
-        if self.poll_active.load(Ordering::Acquire) {
+        // If buffering mode is disabled, there must be a waiter who wants to be
+        // notified directly when there's a byte available from the underlying
+        // source. In that case, simply notify that waiter and return; the
+        // waiter will consume the byte directly from the source when it calls
+        // `read_data`.
+        if self.should_buffer.load(Ordering::Acquire) {
             let mut inner = self.inner.lock().unwrap();
+
+            // If there's room for the byte, read it from the source and put it
+            // in the buffer. Otherwise, fall through to set the data-ready
+            // notification.
             if !inner.is_full() {
                 if let Some(c) = source.read() {
                     inner.buf.push(c);
                 }
-                // If the buffer is not full and polling is still active, elide
-                // the notification to the Source consumer.
-                if !inner.is_full() && self.poll_active.load(Ordering::Acquire)
+
+                // If there's still room for more data, and buffering is still
+                // allowed, return before signaling to any active pollers that
+                // they should try to satisfy their reads.
+                //
+                // N.B. It's important to read `should_buffer` while holding the
+                // `inner` lock. Otherwise the following race can occur:
+                //
+                // 1. A polling interval elapses; a task in `wait` checks the
+                //    buffer and sees that it's empty.
+                // 2. This buffer's byte source calls this routine because a new
+                //    byte is available. This routine reads that
+                //    `self.should_buffer` is `true`, takes the lock, and writes
+                //    the byte to the buffer.
+                // 3. The check below sees that the buffer is not full and that
+                //    `self.should_buffer` is still `true`, so it returns.
+                // 4. The task in `wait` sets `should_buffer` to false and then
+                //    waits for `data_ready` to be set.
+                //
+                // If this happens, the waiter will now wait forever even though
+                // data is available (unless another notification arrives and
+                // observes the new value of `should_buffer`).
+                //
+                // Accessing `should_buffer` under the lock prevents this by
+                // preventing a new call to `notify` from reaching this point
+                // before an expiring poller signals its intent to wait for
+                // `data_ready` to be notified.
+                if !inner.is_full()
+                    && self.should_buffer.load(Ordering::Acquire)
                 {
                     return;
                 }
             }
         }
+
         self.data_ready.notify_one();
     }
 }
@@ -202,20 +302,6 @@ impl SinkBuffer {
         sink.set_notifier(Some(Box::new(move |s| {
             this.notify(s);
         })));
-    }
-
-    pub async fn wait_empty(&self) {
-        loop {
-            {
-                let mut inner = self.inner.lock().unwrap();
-                if inner.buf.is_empty() {
-                    inner.wait_empty = false;
-                    return;
-                }
-                inner.wait_empty = true;
-            }
-            self.notify.notified().await;
-        }
     }
 
     /// Write data into the Sink and/or its associated buffer.
@@ -544,7 +630,7 @@ fn test_copy_and_consume_one_u8() {
 }
 
 #[cfg(test)]
-impl Params {
+impl SourceBufferParams {
     pub(crate) fn test_defaults() -> Self {
         Self {
             poll_interval: Duration::from_millis(10),
@@ -564,7 +650,7 @@ mod test {
     #[tokio::test]
     async fn read_empty_returns_zero_bytes() {
         let uart = Arc::new(TestUart::new(4, 4));
-        let rpoll = SourceBuffer::new(Params::test_defaults());
+        let rpoll = SourceBuffer::new(SourceBufferParams::test_defaults());
         rpoll.attach(uart.as_ref());
 
         let mut output = [];
@@ -586,7 +672,7 @@ mod test {
     #[tokio::test]
     async fn read_byte() {
         let uart = Arc::new(TestUart::new(4, 4));
-        let rpoll = SourceBuffer::new(Params::test_defaults());
+        let rpoll = SourceBuffer::new(SourceBufferParams::test_defaults());
         rpoll.attach(uart.as_ref());
 
         // If the guest writes a byte...
@@ -602,7 +688,7 @@ mod test {
     #[tokio::test]
     async fn read_bytes() {
         let uart = Arc::new(TestUart::new(2, 2));
-        let rpoll = SourceBuffer::new(Params::test_defaults());
+        let rpoll = SourceBuffer::new(SourceBufferParams::test_defaults());
         rpoll.attach(uart.as_ref());
 
         // If the guest writes multiple bytes...
@@ -620,7 +706,7 @@ mod test {
     #[tokio::test]
     async fn read_bytes_blocking() {
         let uart = Arc::new(TestUart::new(4, 4));
-        let rpoll = SourceBuffer::new(Params::test_defaults());
+        let rpoll = SourceBuffer::new(SourceBufferParams::test_defaults());
         rpoll.attach(uart.as_ref());
 
         let mut output = [0u8; 16];

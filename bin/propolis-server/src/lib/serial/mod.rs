@@ -312,11 +312,12 @@ impl<Device: Sink + Source> Serial<Device> {
         source_size: NonZeroUsize,
     ) -> Serial<Device> {
         let sink_poller = pollers::SinkBuffer::new(sink_size);
-        let source_poller = pollers::SourceBuffer::new(pollers::Params {
-            buf_size: source_size,
-            poll_interval: Duration::from_millis(10),
-            poll_miss_thresh: 5,
-        });
+        let source_poller =
+            pollers::SourceBuffer::new(pollers::SourceBufferParams {
+                buf_size: source_size,
+                poll_interval: Duration::from_millis(10),
+                poll_miss_thresh: 5,
+            });
         let history = Default::default();
         sink_poller.attach(uart.as_ref());
         source_poller.attach(uart.as_ref());
