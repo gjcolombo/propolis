@@ -4,6 +4,8 @@
 
 use std::sync::{Arc, Mutex};
 
+use console::ConsoleDevice;
+
 use super::uart16550::{migrate, Uart};
 use crate::chardev::*;
 use crate::common::*;
@@ -194,3 +196,5 @@ impl MigrateSingle for LpcUart {
         Ok(())
     }
 }
+
+impl ConsoleDevice for LpcUart {}

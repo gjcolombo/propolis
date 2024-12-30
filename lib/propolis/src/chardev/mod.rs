@@ -8,6 +8,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
+pub mod console;
 mod file_out;
 pub mod pollers;
 mod sock;
