@@ -3,14 +3,9 @@
 // file, You can obtain one at https://mozilla.org/MPL/2.0/.
 
 //! Routines that manage connections to a VM's serial consoles.
-//!
-//! Incoming calls to the `/instance/serial` endpoint produce a websocket stream
-//! that gets handed off to a connection task. This task is responsible for
-//! reading to and writing from the socket and for interfacing with the Propolis
-//! console backend.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex},
 };
 
@@ -42,7 +37,7 @@ mod probes {
     fn serial_event_done() {}
     fn serial_event_read(b: u8) {}
     fn serial_event_console_disconnect() {}
-    fn serial_event_ws_recv() {}
+    fn serial_event_ws_recv(len: usize) {}
     fn serial_event_ws_error() {}
     fn serial_event_ws_disconnect() {}
     fn serial_event_wrote_byte(b: u8) {}
@@ -136,7 +131,9 @@ impl SerialConsoleManager {
         ws: WebSocketStream<WebsocketConnectionRaw>,
         readonly: ReadOnly,
     ) {
-        // Read-only clients disconnect as soon as they
+        // Read-only clients disconnect if they aren't able to keep up with
+        // incoming bytes from the guest. Create a slightly larger channel for
+        // them to allow some buffering of incoming guest bytes.
         let ch_size = match readonly {
             ReadOnly::ReadWrite => 1,
             ReadOnly::ReadOnly => 256,
@@ -245,6 +242,7 @@ async fn serial_task(
         Done,
         ConsoleRead(u8),
         ConsoleDisconnected,
+        WroteToBackend(Result<usize, (std::io::Error, &'static str)>),
         WebsocketMessage(Message),
         WebsocketError(tokio_tungstenite::tungstenite::Error),
         WebsocketDisconnected,
@@ -286,10 +284,52 @@ async fn serial_task(
         "readonly" => readonly
     );
 
+    let mut remaining_to_send: VecDeque<u8> = VecDeque::new();
     let (mut sink, mut stream) = ws.split();
     let mut close_reason: Option<&'static str> = None;
     loop {
+        use futures::future::Either;
+
+        // If the client is a read-write client and there are bytes available to
+        // send to the guest, construct a future that will actually send them.
+        let (will_send, send_fut) =
+            if let (ConsoleClient::ReadWrite(hdl), false) =
+                (&mut console_client, remaining_to_send.is_empty())
+            {
+                // Ensure that all available bytes can be offered in a single
+                // slice. This should generally not be very expensive because
+                // when the deque has contents, those contents will be
+                // completely drained before any new bytes can be read from the
+                // websocket.
+                remaining_to_send.make_contiguous();
+                (
+                    true,
+                    Either::Left(write_to_backend(
+                        hdl,
+                        remaining_to_send.as_slices().0,
+                    )),
+                )
+            } else {
+                (false, Either::Right(futures::future::pending()))
+            };
+
+        // If there are no bytes to be sent to the guest, accept another message
+        // from the websocket.
+        let ws_fut = if !will_send {
+            Either::Left(stream.next())
+        } else {
+            Either::Right(futures::future::pending())
+        };
+
         let event = select! {
+            // The priority of these branches is important:
+            //
+            // 1. Requests to stop the client take precedence over everything
+            //    else.
+            // 2. New bytes written by the guest need to be processed before any
+            //    other requests: if a guest outputs a byte while a read-write
+            //    client is attached, the relevant vCPU will be blocked until
+            //    the client processes the byte.
             biased;
 
             _ = done_rx.changed() => {
@@ -303,7 +343,11 @@ async fn serial_task(
                 }
             }
 
-            ws = stream.next() => {
+            res = send_fut => {
+                Event::WroteToBackend(res)
+            }
+
+            ws = ws_fut => {
                 match ws {
                     None => Event::WebsocketDisconnected,
                     Some(Ok(msg)) => Event::WebsocketMessage(msg),
@@ -320,6 +364,17 @@ async fn serial_task(
             }
             Event::ConsoleRead(b) => {
                 probes::serial_event_read!(|| (b));
+
+                // Waiting outside the `select!` is OK here:
+                //
+                // - If the client is a read-write client, it is allowed to
+                //   block the guest to ensure that every byte of guest output
+                //   is transmitted to the client.
+                // - If the client is a read-only client, and it is slow to
+                //   acknowledge this message, its channel to the backend will
+                //   eventually fill up. If this happens and the backend thus
+                //   becomes unable to send new bytes, it will drop the channel
+                //   to allow the guest to make progress.
                 let _ = sink.send(Message::binary(vec![b])).await;
             }
             Event::ConsoleDisconnected => {
@@ -330,46 +385,29 @@ async fn serial_task(
                 );
                 break;
             }
-            Event::WebsocketMessage(msg) => match (&mut console_client, msg) {
-                (ConsoleClient::ReadWrite(hdl), Message::Binary(bytes)) => {
-                    probes::serial_event_ws_recv!(|| ());
-                    let mut bytes = bytes.as_slice();
-                    while !bytes.is_empty() {
-                        use std::io::ErrorKind;
-                        let written = match hdl.write(bytes).await {
-                            Ok(n) => n,
-                            Err(e)
-                                if e.kind() == ErrorKind::ConnectionAborted =>
-                            {
-                                info!(
-                                    log,
-                                    "read-write console connection overtaken";
-                                    "client_id" => client_id,
-                                );
+            Event::WroteToBackend(result) => {
+                let written = match result {
+                    Ok(n) => n,
+                    Err((e, reason)) => {
+                        warn!(
+                            log,
+                            "dropping read-write console client";
+                            "client_id" => client_id,
+                            "error" => ?e,
+                            "reason" => reason
+                        );
 
-                                close_reason = Some(
-                                    "connection taken over by another client",
-                                );
-                                break;
-                            }
-                            Err(e) => {
-                                warn!(
-                                    log,
-                                    "error writing to console backend";
-                                    "client_id" => client_id,
-                                    "error" => ?e
-                                );
-
-                                close_reason = Some(
-                                    "internal error writing to console backend",
-                                );
-                                break;
-                            }
-                        };
-
-                        probes::serial_event_wrote_byte!(|| (bytes[0]));
-                        bytes = &bytes[written..];
+                        close_reason = Some(reason);
+                        break;
                     }
+                };
+
+                drop(remaining_to_send.drain(..written));
+            }
+            Event::WebsocketMessage(msg) => match (&mut console_client, msg) {
+                (ConsoleClient::ReadWrite(_), Message::Binary(bytes)) => {
+                    probes::serial_event_ws_recv!(|| (bytes.len()));
+                    remaining_to_send.extend(bytes.as_slice());
                 }
                 (ConsoleClient::ReadOnly(_), Message::Binary(_)) => {
                     continue;
@@ -402,4 +440,41 @@ async fn serial_task(
     }
 
     let _ = client_done_tx.send(client_id).await;
+}
+
+/// Attempts to write `bytes` to the console backend via the supplied read-write
+/// client handle. Failure to write bytes is presumed to give the caller cause
+/// to disconnect the client.
+///
+/// # Return value
+///
+/// Returns the number of bytes written on success. On failure, returns the I/O
+/// error produced by the handle (for logging purposes) and a friendly
+/// disconnection reason string for the caller to pass back to the websocket
+/// client.
+///
+/// # Cancel safety
+///
+/// The future produced by this function call is cancel-safe: if it is dropped,
+/// it is guaranteed that no bytes were written to the console. See
+/// [`ReadWriteClientHandle`]'s documentation for more details.
+async fn write_to_backend(
+    hdl: &mut ReadWriteClientHandle,
+    bytes: &[u8],
+) -> Result<usize, (std::io::Error, &'static str)> {
+    let written = hdl.write(bytes).await.map_err(|e| {
+        let reason = if e.kind() == std::io::ErrorKind::ConnectionAborted {
+            "read-write console connection overtaken"
+        } else {
+            "error writing to console backend"
+        };
+
+        (e, reason)
+    })?;
+
+    for byte in bytes.iter().take(written) {
+        probes::serial_event_wrote_byte!(|| (byte));
+    }
+
+    Ok(written)
 }

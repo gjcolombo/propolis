@@ -223,42 +223,56 @@ impl ConsoleBackend {
     /// Invoked in response to a read-ready notification from the backend's
     /// associated device.
     fn notify_read(&self, source: &dyn Source) {
+        struct RoClient {
+            id: ClientId,
+            tx: mpsc::Sender<u8>,
+            dead: bool,
+        }
+
         let Some(c) = source.read() else {
             return;
         };
 
-        let mut inner = self.inner.lock().unwrap();
+        // Take the lock and capture all listeners for this byte, then drop the
+        // lock before actually dispatching the byte to anyone.
+        let (rw_tx, mut ro_clients) = {
+            let inner = self.inner.lock().unwrap();
+            let rw_tx = inner.rw_client.as_ref().map(|c| c.tx.clone());
+            let ro_clients = inner
+                .ro_clients
+                .iter()
+                .map(|(id, c)| RoClient {
+                    id: *id,
+                    tx: c.tx.clone(),
+                    dead: false,
+                })
+                .collect::<Vec<_>>();
+            (rw_tx, ro_clients)
+        };
 
-        // First, send the byte to the current read-write client, if there is
-        // one. The read-write client is explicitly allowed to block the console
-        // device from sending more bytes until the client processes its current
-        // byte.
-        //
-        // This can fail if the client drops the receiver half of the read
-        // channel before it drops its client handle. If that happens, just
-        // evict the client entirely.
-        if let Some(rw_client) = inner.rw_client.as_ref() {
-            if rw_client.tx.blocking_send(c).is_err() {
-                inner.rw_client = None;
-            }
-        }
+        // It's not safe to hold the lock while issuing a blocking send to the
+        // read-write client, because that client might simultaneously be
+        // issuing a write that needs to take the lock.
+        let rw_dead = if let Some(rw_tx) = rw_tx {
+            rw_tx.blocking_send(c).is_err()
+        } else {
+            false
+        };
 
-        inner.push_byte(c);
-
-        // Try to send the received byte to all read-only clients. Any client
-        // that can't take the heat is forced out of the kitchen and removed
-        // from the read-only client list. Dropping this half of the channel
-        // allows the client to perceive that it was disconnected (its calls to
-        // `recv` will start returning `None`).
-        let mut evicted = vec![];
-        for (hdl, client) in inner.ro_clients.iter() {
+        for client in ro_clients.iter_mut() {
             if client.tx.try_send(c).is_err() {
-                evicted.push(*hdl);
+                client.dead = true;
             }
         }
 
-        for hdl in evicted {
-            inner.ro_clients.remove(&hdl);
+        let mut inner = self.inner.lock().unwrap();
+        inner.push_byte(c);
+        if rw_dead {
+            inner.rw_client = None;
+        }
+
+        for client in ro_clients.iter().filter(|client| client.dead) {
+            inner.ro_clients.remove(&client.id);
         }
     }
 
