@@ -60,7 +60,7 @@ pub fn nvme_serial_from_str(s: &str, pad: u8) -> [u8; 20] {
 /// manually duplicated for use.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum InstanceSerialConsoleControlMessage {
-    Migrating { destination: SocketAddr, from_start: u64 },
+    Migrating { destination: SocketAddr, from_start: u64, readonly: bool },
 }
 
 /// A trait representing a console stream.
@@ -74,6 +74,7 @@ pub(crate) trait SerialConsoleStreamBuilder: Send {
         &mut self,
         address: SocketAddr,
         offset: WSClientOffset,
+        readonly: bool,
     ) -> Result<Box<dyn SerialConsoleStream>, WSError>;
 }
 
@@ -95,6 +96,7 @@ impl SerialConsoleStreamBuilder for PropolisSerialBuilder {
         &mut self,
         address: SocketAddr,
         offset: WSClientOffset,
+        readonly: bool,
     ) -> Result<Box<dyn SerialConsoleStream>, WSError> {
         let client = PropolisClient::new(&format!("http://{}", address));
         let mut req = client.instance_serial();
@@ -106,6 +108,10 @@ impl SerialConsoleStreamBuilder for PropolisSerialBuilder {
             WSClientOffset::MostRecent(offset) => {
                 req = req.most_recent(offset);
             }
+        }
+
+        if readonly {
+            req = req.readonly(true);
         }
 
         let upgraded = req
@@ -157,6 +163,7 @@ impl<St: SerialConsoleStream + 'static> SerialConsoleStreamBuilder
         // offset is currently unused by this builder. Worth testing in
         // the future.
         _offset: WSClientOffset,
+        _readonly: bool,
     ) -> Result<Box<dyn SerialConsoleStream>, WSError> {
         if let Some((delay, stream)) =
             self.client_conns_and_delays.remove(&address)
@@ -202,10 +209,12 @@ impl InstanceSerialConsoleHelper {
     pub async fn new(
         address: SocketAddr,
         offset: WSClientOffset,
+        readonly: bool,
         log: Option<Logger>,
     ) -> Result<Self, WSError> {
         let stream_builder = PropolisSerialBuilder::new();
-        Self::new_with_builder(stream_builder, address, offset, log).await
+        Self::new_with_builder(stream_builder, address, offset, readonly, log)
+            .await
     }
 
     /// Creates a new serial console helper for testing.
@@ -224,7 +233,8 @@ impl InstanceSerialConsoleHelper {
                 .into_iter()
                 .map(|(addr, stream)| (addr, Duration::ZERO, stream)),
         );
-        Self::new_with_builder(stream_builder, address, offset, log).await
+        Self::new_with_builder(stream_builder, address, offset, false, log)
+            .await
     }
 
     /// Creates a new serial console helper for testing, with delays before
@@ -241,7 +251,8 @@ impl InstanceSerialConsoleHelper {
         log: Option<Logger>,
     ) -> Result<Self, WSError> {
         let stream_builder = TestSerialBuilder::new(connections);
-        Self::new_with_builder(stream_builder, address, offset, log).await
+        Self::new_with_builder(stream_builder, address, offset, false, log)
+            .await
     }
 
     // Currently used for testing, and not exposed to clients.
@@ -249,9 +260,10 @@ impl InstanceSerialConsoleHelper {
         mut stream_builder: impl SerialConsoleStreamBuilder + 'static,
         address: SocketAddr,
         offset: WSClientOffset,
+        readonly: bool,
         log: Option<Logger>,
     ) -> Result<Self, WSError> {
-        let stream = stream_builder.build(address, offset).await?;
+        let stream = stream_builder.build(address, offset, readonly).await?;
         let ws_stream =
             WebSocketStream::from_raw_socket(stream, Role::Client, None).await;
         Ok(Self { stream_builder: Box::new(stream_builder), ws_stream, log })
@@ -394,6 +406,7 @@ impl<'a> InstanceSerialConsoleMessage<'a> {
                 Ok(InstanceSerialConsoleControlMessage::Migrating {
                     destination,
                     from_start,
+                    readonly,
                 }) => {
                     let stream = self
                         .helper
@@ -401,6 +414,7 @@ impl<'a> InstanceSerialConsoleMessage<'a> {
                         .build(
                             destination,
                             WSClientOffset::FromStart(from_start),
+                            readonly,
                         )
                         .await?;
                     self.helper.ws_stream = WebSocketStream::from_raw_socket(
@@ -485,6 +499,7 @@ mod test {
             &InstanceSerialConsoleControlMessage::Migrating {
                 destination: SocketAddr::V4("0.0.0.0:0".parse().unwrap()),
                 from_start: 0,
+                readonly: false,
             },
         )
         .unwrap();
@@ -526,6 +541,7 @@ mod test {
             &InstanceSerialConsoleControlMessage::Migrating {
                 destination: address_2,
                 from_start: 0,
+                readonly: false,
             },
         )
         .unwrap();

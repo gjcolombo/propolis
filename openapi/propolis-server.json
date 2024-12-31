@@ -265,6 +265,14 @@
               "format": "uint64",
               "minimum": 0
             }
+          },
+          {
+            "in": "query",
+            "name": "readonly",
+            "description": "Specifies whether to connect in read-only or read-write mode. Only one read-write client may be connected to an instance at a time. Read-only clients are forcibly disconnected if they are unable to keep up with guest console output as it is printed.",
+            "schema": {
+              "type": "boolean"
+            }
           }
         ],
         "responses": {

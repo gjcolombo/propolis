@@ -30,7 +30,6 @@ use dropshot::{
     HttpResponseOk, HttpResponseUpdatedNoContent, Path, Query, RequestContext,
     TypedBody, WebsocketConnection,
 };
-use futures::SinkExt;
 use internal_dns::resolver::{ResolveError, Resolver};
 use internal_dns::ServiceName;
 pub use nexus_client::Client as NexusClient;
@@ -405,7 +404,7 @@ async fn instance_serial_history_get(
 
     Ok(HttpResponseOk(api::InstanceSerialConsoleHistoryResponse {
         data: vec![],
-        last_byte_offset: 0 as u64,
+        last_byte_offset: 0,
     }))
 }
 
@@ -420,16 +419,17 @@ async fn instance_serial(
 ) -> dropshot::WebsocketChannelResult {
     let ctx = rqctx.context();
     let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
-    let serial = vm.objects().lock_shared().await.com1().clone();
+    let query = query.into_inner();
 
     // Use the default buffering paramters for the websocket configuration
     //
     // Because messages are written with [`StreamExt::send`], the buffer on the
-    // websocket is flushed for every message, preventing both unecessary delays
-    // of messages and the potential for the buffer to grow without bound.
+    // websocket is flushed for every message, preventing both unnecessary
+    // delays of messages and the potential for the buffer to grow without
+    // bound.
     let config = WebSocketConfig::default();
 
-    let mut ws_stream = WebSocketStream::from_raw_socket(
+    let ws_stream = WebSocketStream::from_raw_socket(
         websock.into_inner(),
         Role::Server,
         Some(config),
@@ -452,12 +452,17 @@ async fn instance_serial(
     }
     */
 
-    // Get serial task's handle and send it the websocket stream
     let serial_mgr = vm.services().serial_mgr.lock().await;
+    let readonly = if query.readonly {
+        crate::vm::serial::ReadOnly::ReadOnly
+    } else {
+        crate::vm::serial::ReadOnly::ReadWrite
+    };
+
     serial_mgr
         .as_ref()
         .ok_or("Instance has no active serial console")?
-        .connect(ws_stream, crate::vm::serial::ReadOnly::ReadWrite);
+        .connect(ws_stream, readonly);
 
     Ok(())
 }

@@ -316,15 +316,25 @@ pub struct InstanceSerialConsoleHistoryResponse {
 /// bytes from the buffered history first.
 #[derive(Clone, Debug, Deserialize, Serialize, JsonSchema, PartialEq)]
 pub struct InstanceSerialConsoleStreamRequest {
-    /// Character index in the serial buffer from which to read, counting the bytes output since
-    /// instance start. If this is provided, `most_recent` must *not* be provided.
-    // TODO: if neither is specified, send enough serial buffer history to reconstruct
-    //  the current contents and cursor state of an interactive terminal
+    /// Character index in the serial buffer from which to read, counting the
+    /// bytes output since instance start. If this is provided, `most_recent`
+    /// must *not* be provided.
+    //
+    // TODO: if neither is specified, send enough serial buffer history to
+    // reconstruct the current contents and cursor state of an interactive
+    // terminal
     pub from_start: Option<u64>,
-    /// Character index in the serial buffer from which to read, counting *backward* from the most
-    /// recently buffered data retrieved from the instance. (See note on `from_start` about mutual
-    /// exclusivity)
+    /// Character index in the serial buffer from which to read, counting
+    /// *backward* from the most recently buffered data retrieved from the
+    /// instance. (See note on `from_start` about mutual exclusivity)
     pub most_recent: Option<u64>,
+
+    /// Specifies whether to connect in read-only or read-write mode. Only one
+    /// read-write client may be connected to an instance at a time. Read-only
+    /// clients are forcibly disconnected if they are unable to keep up with
+    /// guest console output as it is printed.
+    #[serde(default)]
+    pub readonly: bool,
 }
 
 /// Control message(s) sent through the websocket to serial console clients.

@@ -46,6 +46,8 @@ mod probes {
     fn serial_event_ws_error() {}
     fn serial_event_ws_disconnect() {}
     fn serial_event_wrote_byte(b: u8) {}
+}
+
 type ClientId = u64;
 
 /// Indicates whether a serial console connection should be read-only. Read-only
@@ -59,7 +61,7 @@ pub(crate) enum ReadOnly {
 
 enum ConsoleClient {
     ReadWrite(ReadWriteClientHandle),
-    ReadOnly(ReadOnlyClientHandle),
+    ReadOnly(#[allow(dead_code)] ReadOnlyClientHandle),
 }
 
 #[derive(Default)]
@@ -272,7 +274,18 @@ async fn serial_task(
         }
     }
 
-    info!(log, "serial console task started"; "client_id" => client_id);
+    let readonly = match console_client {
+        ConsoleClient::ReadWrite(_) => false,
+        ConsoleClient::ReadOnly(_) => true,
+    };
+
+    info!(
+        log,
+        "serial console task started";
+        "client_id" => client_id,
+        "readonly" => readonly
+    );
+
     let (mut sink, mut stream) = ws.split();
     let mut close_reason: Option<&'static str> = None;
     loop {
