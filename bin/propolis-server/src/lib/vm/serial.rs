@@ -37,6 +37,15 @@ use tokio_tungstenite::{
     WebSocketStream,
 };
 
+#[usdt::provider(provider = "propolis")]
+mod probes {
+    fn serial_event_done() {}
+    fn serial_event_read(b: u8) {}
+    fn serial_event_console_disconnect() {}
+    fn serial_event_ws_recv() {}
+    fn serial_event_ws_error() {}
+    fn serial_event_ws_disconnect() {}
+    fn serial_event_wrote_byte(b: u8) {}
 type ClientId = u64;
 
 /// Indicates whether a serial console connection should be read-only. Read-only
@@ -292,13 +301,16 @@ async fn serial_task(
 
         match event {
             Event::Done => {
+                probes::serial_event_done!(|| ());
                 close_reason = Some("VM stopped");
                 break;
             }
             Event::ConsoleRead(b) => {
+                probes::serial_event_read!(|| (b));
                 let _ = sink.send(Message::binary(vec![b])).await;
             }
             Event::ConsoleDisconnected => {
+                probes::serial_event_console_disconnect!(|| ());
                 info!(
                     log, "console backend dropped its client channel";
                     "client_id" => client_id
@@ -307,6 +319,7 @@ async fn serial_task(
             }
             Event::WebsocketMessage(msg) => match (&mut console_client, msg) {
                 (ConsoleClient::ReadWrite(hdl), Message::Binary(bytes)) => {
+                    probes::serial_event_ws_recv!(|| ());
                     let mut bytes = bytes.as_slice();
                     while !bytes.is_empty() {
                         use std::io::ErrorKind;
@@ -341,6 +354,7 @@ async fn serial_task(
                             }
                         };
 
+                        probes::serial_event_wrote_byte!(|| (bytes[0]));
                         bytes = &bytes[written..];
                     }
                 }
@@ -350,6 +364,7 @@ async fn serial_task(
                 (_, _) => continue,
             },
             Event::WebsocketError(e) => {
+                probes::serial_event_ws_error!(|| ());
                 warn!(
                     log, "serial console websocket error";
                     "client_id" => client_id,
@@ -358,6 +373,7 @@ async fn serial_task(
                 break;
             }
             Event::WebsocketDisconnected => {
+                probes::serial_event_ws_disconnect!(|| ());
                 info!(
                     log, "serial console client disconnected";
                     "client_id" => client_id
