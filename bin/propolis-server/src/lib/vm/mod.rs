@@ -103,6 +103,7 @@ pub(crate) mod ensure;
 pub(crate) mod guest_event;
 pub(crate) mod objects;
 mod request_queue;
+pub(crate) mod serial;
 mod services;
 mod state_driver;
 pub(crate) mod state_publisher;

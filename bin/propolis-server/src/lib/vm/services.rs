@@ -12,14 +12,12 @@ use propolis_api_types::InstanceProperties;
 use slog::{error, info, Logger};
 
 use crate::{
-    serial::SerialTaskControlMessage,
     server::MetricsEndpointConfig,
     spec::Spec,
     stats::{ServerStats, VirtualMachine},
+    vm::{objects::VmObjects, serial::SerialConsoleManager},
     vnc::VncServer,
 };
-
-use super::objects::{VmObjects, VmObjectsShared};
 
 /// Information used to serve Oximeter metrics.
 #[derive(Default)]
@@ -35,8 +33,8 @@ pub(crate) struct OximeterState {
 /// A collection of services visible to consumers outside this Propolis that
 /// depend on the functionality supplied by an extant VM.
 pub(crate) struct VmServices {
-    /// A VM's serial console handler task.
-    pub serial_task: tokio::sync::Mutex<Option<crate::serial::SerialTask>>,
+    /// The serial console manager for the VM's first COM port.
+    pub serial_mgr: tokio::sync::Mutex<Option<SerialConsoleManager>>,
 
     /// A VM's Oximeter state.
     ///
@@ -79,10 +77,11 @@ impl VmServices {
             vnc_server.attach(vm_objects.ps2ctrl().clone(), ramfb.clone());
         }
 
-        let serial_task = start_serial_task(log, &vm_objects).await;
+        let serial_mgr =
+            SerialConsoleManager::new(log.clone(), vm_objects.com1().clone());
 
         Self {
-            serial_task: tokio::sync::Mutex::new(Some(serial_task)),
+            serial_mgr: tokio::sync::Mutex::new(Some(serial_mgr)),
             oximeter: tokio::sync::Mutex::new(oximeter_state),
             vnc_server,
         }
@@ -92,12 +91,8 @@ impl VmServices {
     pub(super) async fn stop(&self, log: &Logger) {
         self.vnc_server.stop().await;
 
-        if let Some(serial_task) = self.serial_task.lock().await.take() {
-            let _ = serial_task
-                .control_ch
-                .send(SerialTaskControlMessage::Stopping)
-                .await;
-            let _ = serial_task.task.await;
+        if let Some(serial_mgr) = self.serial_mgr.lock().await.take() {
+            serial_mgr.finish().await;
         }
 
         let mut oximeter_state = self.oximeter.lock().await;
@@ -164,31 +159,4 @@ async fn register_oximeter_producer(
     }
 
     oximeter_state
-}
-
-/// Launches a serial console handler task.
-async fn start_serial_task<'vm>(
-    log: &slog::Logger,
-    vm_objects: &VmObjectsShared<'vm>,
-) -> crate::serial::SerialTask {
-    let (websocks_ch, websocks_recv) = tokio::sync::mpsc::channel(1);
-    let (control_ch, control_recv) = tokio::sync::mpsc::channel(1);
-
-    let serial = vm_objects.com1().clone();
-    serial.set_task_control_sender(control_ch.clone()).await;
-    let err_log = log.new(slog::o!("component" => "serial task"));
-    let task = tokio::spawn(async move {
-        if let Err(e) = crate::serial::instance_serial_task(
-            websocks_recv,
-            control_recv,
-            serial,
-            err_log.clone(),
-        )
-        .await
-        {
-            error!(err_log, "Failure in serial task: {}", e);
-        }
-    });
-
-    crate::serial::SerialTask { task, control_ch, websocks_ch }
 }

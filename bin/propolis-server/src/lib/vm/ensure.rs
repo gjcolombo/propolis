@@ -425,7 +425,7 @@ async fn initialize_vm_objects(
     init.initialize_rtc(&chipset)?;
     init.initialize_hpet();
 
-    let com1 = Arc::new(init.initialize_uart(&chipset));
+    let com1 = init.initialize_uart(&chipset);
     let ps2ctrl = init.initialize_ps2(&chipset);
     init.initialize_qemu_debug_port()?;
     init.initialize_qemu_pvpanic(VirtualMachine::new(

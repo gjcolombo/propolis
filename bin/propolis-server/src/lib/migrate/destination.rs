@@ -762,7 +762,7 @@ impl<T: MigrateConn> RonV0<T> {
                 .map_err(codec::ProtocolError::from)?,
         ))
         .await?;
-        let com1_history = match self.read_msg().await? {
+        let _com1_history = match self.read_msg().await? {
             codec::Message::Serialized(encoded) => encoded,
             msg => {
                 error!(self.log(), "server_state: unexpected message: {msg:?}");
@@ -770,6 +770,7 @@ impl<T: MigrateConn> RonV0<T> {
             }
         };
 
+        /* TODO(gjc) restore history management
         ensure_ctx
             .vm_objects()
             .lock_shared()
@@ -778,6 +779,7 @@ impl<T: MigrateConn> RonV0<T> {
             .import(&com1_history)
             .await
             .map_err(|e| MigrateError::Codec(e.to_string()))?;
+        */
 
         self.send_msg(codec::Message::Okay).await
     }

@@ -9,7 +9,6 @@ use std::os::unix::fs::FileTypeExt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::serial::Serial;
 use crate::spec::{self, Spec, StorageBackend, StorageDevice};
 use crate::stats::{
     track_network_interface_kstats, track_vcpu_kstats, VirtualDiskProducer,
@@ -25,6 +24,7 @@ pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
 use oximeter_instruments::kstat::KstatSampler;
 use propolis::block;
+use propolis::chardev::console::{ConsoleBackend, ConsoleDevice};
 use propolis::chardev::{self, BlockingSource, Source};
 use propolis::common::{Lifecycle, GB, MB, PAGE_SIZE};
 use propolis::firmware::smbios;
@@ -377,8 +377,8 @@ impl<'a> MachineInitializer<'a> {
     pub fn initialize_uart(
         &mut self,
         chipset: &RegisteredChipset,
-    ) -> Serial<LpcUart> {
-        let mut com1 = None;
+    ) -> Arc<ConsoleBackend> {
+        let mut com1: Option<Arc<dyn ConsoleDevice>> = None;
         for (name, desc) in self.spec.serial.iter() {
             if desc.device != spec::SerialPortDevice::Uart {
                 continue;
@@ -401,9 +401,8 @@ impl<'a> MachineInitializer<'a> {
             }
         }
 
-        let sink_size = NonZeroUsize::new(64).unwrap();
-        let source_size = NonZeroUsize::new(1024).unwrap();
-        Serial::new(com1.unwrap(), sink_size, source_size)
+        // TODO(gjc) figure out how to reintroduce the source/sink pollers here
+        ConsoleBackend::new(1024, &com1.unwrap())
     }
 
     pub fn initialize_ps2(

@@ -776,19 +776,21 @@ impl<'vm, T: MigrateConn> RonV0Runner<'vm, T> {
 
     async fn server_state(&mut self) -> Result<(), MigrateError> {
         self.update_state(MigrationState::Server);
-        let remote_addr = match self.read_msg().await? {
+        let _remote_addr = match self.read_msg().await? {
             Message::Serialized(s) => {
                 ron::from_str(&s).map_err(codec::ProtocolError::from)?
             }
             _ => return Err(MigrateError::UnexpectedMessage),
         };
+        /* TODO(gjc) restore history management
         let com1_history = self
             .vm
             .lock_shared()
             .await
             .com1()
             .export_history(remote_addr)
-            .await?;
+            .await?; */
+        let com1_history = "".to_string();
         self.send_msg(codec::Message::Serialized(com1_history)).await?;
         self.read_ok().await
     }
