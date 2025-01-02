@@ -346,7 +346,7 @@ pub struct InstanceSerialConsoleStreamRequest {
 /// of this type in order to consume it.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub enum InstanceSerialConsoleControlMessage {
-    Migrating { destination: SocketAddr, from_start: u64 },
+    Migrating { destination: SocketAddr, from_start: u64, readonly: bool },
 }
 
 #[derive(Deserialize, JsonSchema)]

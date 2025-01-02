@@ -186,6 +186,7 @@ pub async fn instance_serial_task<Device: Sink + Source>(
                                 &InstanceSerialConsoleControlMessage::Migrating {
                                     destination,
                                     from_start,
+                                    readonly: false,
                                 }
                             )?)).await.is_err() {
                                 failures += 1;

@@ -56,6 +56,12 @@ pub(crate) enum ReadOnly {
     ReadOnly,
 }
 
+impl ReadOnly {
+    fn is_readonly(&self) -> bool {
+        matches!(self, Self::ReadOnly)
+    }
+}
+
 enum ConsoleClient {
     ReadWrite(ReadWriteClientHandle),
     ReadOnly(#[allow(dead_code)] ReadOnlyClientHandle),
@@ -64,6 +70,7 @@ enum ConsoleClient {
 struct ClientTask {
     hdl: JoinHandle<()>,
     control_tx: mpsc::Sender<InstanceSerialConsoleControlMessage>,
+    readonly: bool,
 }
 
 #[derive(Default)]
@@ -175,25 +182,29 @@ impl SerialConsoleManager {
         let task = ClientTask {
             hdl: tokio::spawn(async move { serial_task(ctx).await }),
             control_tx,
+            readonly: readonly.is_readonly(),
         };
+
         client_tasks.tasks.insert(client_id, task);
     }
 
     pub(crate) async fn notify_migration(&self, destination: SocketAddr) {
-        let channels: Vec<_> = {
+        let entries: Vec<_> = {
             let clients = self.client_tasks.lock().unwrap();
             clients
                 .tasks
                 .values()
-                .map(|client| client.control_tx.clone())
+                .map(|client| (client.control_tx.clone(), client.readonly))
                 .collect()
         };
 
-        for tx in channels {
-            let _ = tx
+        for entry in entries {
+            let _ = entry
+                .0
                 .send(InstanceSerialConsoleControlMessage::Migrating {
                     destination,
                     from_start: 0,
+                    readonly: entry.1,
                 })
                 .await;
         }
