@@ -208,6 +208,12 @@ impl<T: MigrateConn + Sync> DestinationProtocol for RonV0<T> {
             // Now that the VM's objects exist, run the rest of the protocol to
             // import state into them.
             if let Err(e) = self.run_import_phases(&mut ensure).await {
+                error!(
+                    self.log,
+                    "migration import phase failed";
+                    "error" => ?e
+                );
+
                 self.update_state(
                     ensure.state_publisher(),
                     MigrationState::Error,

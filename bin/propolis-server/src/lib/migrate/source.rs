@@ -416,6 +416,7 @@ impl<'vm, T: MigrateConn> RonV0Runner<'vm, T> {
         .await;
 
         if let Err(err) = result {
+            error!(self.log, "migration phase failed"; "error" => ?err);
             self.update_state(MigrationState::Error);
             let _ = self.send_msg(codec::Message::Error(err.clone())).await;
 
@@ -776,12 +777,13 @@ impl<'vm, T: MigrateConn> RonV0Runner<'vm, T> {
 
     async fn server_state(&mut self) -> Result<(), MigrateError> {
         self.update_state(MigrationState::Server);
-        let _remote_addr = match self.read_msg().await? {
+        let remote_addr: std::net::SocketAddr = match self.read_msg().await? {
             Message::Serialized(s) => {
                 ron::from_str(&s).map_err(codec::ProtocolError::from)?
             }
             _ => return Err(MigrateError::UnexpectedMessage),
         };
+
         /* TODO(gjc) restore history management
         let com1_history = self
             .vm
@@ -790,6 +792,7 @@ impl<'vm, T: MigrateConn> RonV0Runner<'vm, T> {
             .com1()
             .export_history(remote_addr)
             .await?; */
+
         let com1_history = "".to_string();
         self.send_msg(codec::Message::Serialized(com1_history)).await?;
         self.read_ok().await
