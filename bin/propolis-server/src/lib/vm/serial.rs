@@ -6,6 +6,7 @@
 
 use std::{
     collections::{BTreeMap, VecDeque},
+    net::SocketAddr,
     sync::{Arc, Mutex},
 };
 
@@ -17,6 +18,7 @@ use futures::{
 use propolis::chardev::console::{
     ConsoleBackend, ReadOnlyClientHandle, ReadWriteClientHandle,
 };
+use propolis_api_types::InstanceSerialConsoleControlMessage;
 use slog::{info, warn};
 use tokio::{
     io::AsyncWriteExt,
@@ -59,9 +61,14 @@ enum ConsoleClient {
     ReadOnly(#[allow(dead_code)] ReadOnlyClientHandle),
 }
 
+struct ClientTask {
+    hdl: JoinHandle<()>,
+    control_tx: mpsc::Sender<InstanceSerialConsoleControlMessage>,
+}
+
 #[derive(Default)]
 struct ClientTasks {
-    tasks: BTreeMap<ClientId, JoinHandle<()>>,
+    tasks: BTreeMap<ClientId, ClientTask>,
     next_id: ClientId,
 }
 
@@ -152,18 +159,44 @@ impl SerialConsoleManager {
         let mut client_tasks = self.client_tasks.lock().unwrap();
         let client_id = client_tasks.next_id;
         client_tasks.next_id += 1;
+        let (control_tx, control_rx) = mpsc::channel(1);
+
         let ctx = SerialTaskContext {
             log: self.log.clone(),
             ws,
             console_client,
             console_rx,
+            control_rx,
             done_rx: self.done_rx.clone(),
             client_done_tx: self.client_done_tx.clone(),
             client_id,
         };
 
-        let task = tokio::spawn(async move { serial_task(ctx).await });
+        let task = ClientTask {
+            hdl: tokio::spawn(async move { serial_task(ctx).await }),
+            control_tx,
+        };
         client_tasks.tasks.insert(client_id, task);
+    }
+
+    pub(crate) async fn notify_migration(&self, destination: SocketAddr) {
+        let channels: Vec<_> = {
+            let clients = self.client_tasks.lock().unwrap();
+            clients
+                .tasks
+                .values()
+                .map(|client| client.control_tx.clone())
+                .collect()
+        };
+
+        for tx in channels {
+            let _ = tx
+                .send(InstanceSerialConsoleControlMessage::Migrating {
+                    destination,
+                    from_start: 0,
+                })
+                .await;
+        }
     }
 }
 
@@ -201,7 +234,10 @@ async fn supervisor_task(
                 };
 
                 let tasks: Vec<_> = tasks.into_values().collect();
-                futures::future::join_all(tasks.into_iter()).await;
+                futures::future::join_all(
+                    tasks.into_iter().map(|task| task.hdl),
+                )
+                .await;
                 break;
             }
 
@@ -211,7 +247,7 @@ async fn supervisor_task(
                         "clients must be registered when they complete",
                     );
 
-                let _ = task.await;
+                let _ = task.hdl.await;
             }
         }
     }
@@ -222,6 +258,7 @@ struct SerialTaskContext {
     ws: WebSocketStream<WebsocketConnectionRaw>,
     console_client: ConsoleClient,
     console_rx: mpsc::Receiver<u8>,
+    control_rx: mpsc::Receiver<InstanceSerialConsoleControlMessage>,
     done_rx: watch::Receiver<bool>,
     client_done_tx: mpsc::Sender<ClientId>,
     client_id: ClientId,
@@ -233,6 +270,7 @@ async fn serial_task(
         ws,
         mut console_client,
         mut console_rx,
+        mut control_rx,
         mut done_rx,
         client_done_tx,
         client_id,
@@ -243,6 +281,7 @@ async fn serial_task(
         ConsoleRead(u8),
         ConsoleDisconnected,
         WroteToBackend(Result<usize, (std::io::Error, &'static str)>),
+        ControlMessage(InstanceSerialConsoleControlMessage),
         WebsocketMessage(Message),
         WebsocketError(tokio_tungstenite::tungstenite::Error),
         WebsocketDisconnected,
@@ -343,6 +382,12 @@ async fn serial_task(
                 }
             }
 
+            control = control_rx.recv() => {
+                Event::ControlMessage(control.expect(
+                    "serial control channel should outlive its task"
+                ))
+            }
+
             res = send_fut => {
                 Event::WroteToBackend(res)
             }
@@ -384,6 +429,15 @@ async fn serial_task(
                     "client_id" => client_id
                 );
                 break;
+            }
+            Event::ControlMessage(control) => {
+                let _ = sink
+                    .send(Message::Text(
+                        serde_json::to_string(&control).expect(
+                            "control messages can always serialize into JSON",
+                        ),
+                    ))
+                    .await;
             }
             Event::WroteToBackend(result) => {
                 let written = match result {
