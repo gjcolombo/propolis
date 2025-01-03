@@ -27,9 +27,11 @@
 
 use std::{
     collections::BTreeMap,
+    future::Future,
+    num::NonZeroUsize,
     pin::Pin,
     sync::{Arc, Mutex},
-    task::{Poll, Waker},
+    task::Poll,
 };
 
 use tokio::{io::AsyncWrite, sync::mpsc};
@@ -45,12 +47,16 @@ use super::{
     history_buffer::{
         migrate::ConsoleHistoryBufferV1, HistoryBuffer, SerialHistoryOffset,
     },
+    pollers::SinkBuffer,
     Sink, Source,
 };
 
 type ClientId = u64;
 
-pub trait ConsoleDevice: Source + Sink {}
+pub trait ConsoleDevice: Source + Sink {
+    fn upcast_sink(&self) -> &dyn Sink;
+    fn upcast_arc_sink(self: Arc<Self>) -> Arc<dyn Sink>;
+}
 
 /// Represents a read-only client connection to the console.
 struct ReadOnlyClient {
@@ -80,10 +86,6 @@ struct ReadWriteClient {
 
     /// A channel to which new bytes from the device should be sent.
     tx: mpsc::Sender<u8>,
-
-    /// A waker to signal when this session is ready to accept a new writable
-    /// byte.
-    write_waker: Option<Waker>,
 }
 
 /// A handle that identifies a specific read-write client for a console device.
@@ -153,13 +155,18 @@ impl Inner {
 pub struct ConsoleBackend {
     inner: Mutex<Inner>,
     dev: Arc<dyn ConsoleDevice>,
+    sink: Arc<SinkBuffer>,
 }
 
 impl ConsoleBackend {
     pub fn new(buffer_size: usize, dev: &Arc<dyn ConsoleDevice>) -> Arc<Self> {
+        let sink = SinkBuffer::new(NonZeroUsize::new(64).unwrap());
+        sink.attach(dev.clone().upcast_arc_sink().as_ref());
+
         let this = Arc::new(Self {
             inner: Mutex::new(Inner::new(buffer_size)),
             dev: dev.clone(),
+            sink,
         });
 
         let read_notifier = this.clone();
@@ -168,13 +175,6 @@ impl ConsoleBackend {
             dev.as_ref(),
             Some(Box::new(move |s| read_notifier.notify_read(s))),
         );
-
-        let write_notifier = this.clone();
-        Sink::set_notifier(
-            dev.as_ref(),
-            Some(Box::new(move |s| write_notifier.notify_write(s))),
-        );
-
         this
     }
 
@@ -194,7 +194,7 @@ impl ConsoleBackend {
     ) -> ReadWriteClientHandle {
         let mut inner = self.inner.lock().unwrap();
         let id = inner.next_client_handle();
-        inner.rw_client = Some(ReadWriteClient { id, tx, write_waker: None });
+        inner.rw_client = Some(ReadWriteClient { id, tx });
 
         ReadWriteClientHandle { id, backend: self.clone() }
     }
@@ -291,27 +291,6 @@ impl ConsoleBackend {
             inner.ro_clients.remove(&client.id);
         }
     }
-
-    /// Invoked in response to a write-ready notification from the backend's
-    /// associated device.
-    fn notify_write(&self, _sink: &dyn Sink) {
-        // Take the lock and see if there's a waker from a previous attempt to
-        // write that went unfulfilled. If so, wake it so it can try to write
-        // again. This write attempt should now succeed, since there can only be
-        // one read-write client connected at a time.
-        //
-        // If another client replaced the read-write client that registered for
-        // this notification, this wakeup is useless, since the old client will
-        // no longer be able to write anything. This is OK, however, because the
-        // sink remains ready and the new client will be able to write to it
-        // immediately.
-        let mut inner = self.inner.lock().unwrap();
-        if let Some(rw_client) = inner.rw_client.as_mut() {
-            if let Some(waker) = rw_client.write_waker.take() {
-                waker.wake()
-            }
-        }
-    }
 }
 
 impl AsyncWrite for ReadWriteClientHandle {
@@ -333,19 +312,21 @@ impl AsyncWrite for ReadWriteClientHandle {
             return Poll::Ready(Ok(0));
         }
 
-        let mut inner = self.backend.inner.lock().unwrap();
-        let Some(inner_client) = inner.rw_client_mut(self.id) else {
-            return Poll::Ready(Err(std::io::Error::from(
-                std::io::ErrorKind::ConnectionAborted,
-            )));
-        };
-
-        if self.backend.dev.write(buf[0]) {
-            Poll::Ready(Ok(1))
-        } else {
-            inner_client.write_waker = Some(cx.waker().clone());
-            Poll::Pending
+        {
+            let mut inner = self.backend.inner.lock().unwrap();
+            if inner.rw_client_mut(self.id).is_none() {
+                return Poll::Ready(Err(std::io::Error::from(
+                    std::io::ErrorKind::ConnectionAborted,
+                )));
+            };
         }
+
+        let fut = core::pin::pin!(self
+            .backend
+            .sink
+            .write(buf, self.backend.dev.upcast_sink()));
+
+        fut.poll(cx).map(|opt| Ok(opt.unwrap()))
     }
 
     fn poll_flush(
