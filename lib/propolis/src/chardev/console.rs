@@ -34,7 +34,10 @@ use std::{
 
 use tokio::{io::AsyncWrite, sync::mpsc};
 
-use super::{Sink, Source};
+use super::{
+    history_buffer::{HistoryBuffer, SerialHistoryOffset},
+    Sink, Source,
+};
 
 type ClientId = u64;
 
@@ -98,10 +101,7 @@ impl Drop for ReadWriteClientHandle {
 /// Console backend data that must be accessed under a lock.
 struct Inner {
     /// A buffer containing the most recent bytes written to the console.
-    buffer: Vec<u8>,
-
-    /// The index into `buffer` at which the next byte should be written.
-    next_write: usize,
+    buffer: HistoryBuffer,
 
     /// The currently-connected read-write client, if there is one.
     rw_client: Option<ReadWriteClient>,
@@ -115,25 +115,12 @@ struct Inner {
 }
 
 impl Inner {
-    fn new(capacity: usize) -> Self {
+    fn new(buffer_size: usize) -> Self {
         Self {
-            buffer: Vec::with_capacity(capacity),
-            next_write: 0,
+            buffer: HistoryBuffer::new(buffer_size),
             rw_client: None,
             ro_clients: BTreeMap::new(),
             next_client_id: 0,
-        }
-    }
-
-    fn push_byte(&mut self, byte: u8) {
-        if self.buffer.len() < self.buffer.capacity() {
-            self.buffer.push(byte)
-        } else {
-            self.buffer[self.next_write] = byte;
-            self.next_write += 1;
-            if self.next_write == self.buffer.capacity() {
-                self.next_write = 0;
-            }
         }
     }
 
@@ -160,9 +147,9 @@ pub struct ConsoleBackend {
 }
 
 impl ConsoleBackend {
-    pub fn new(capacity: usize, dev: &Arc<dyn ConsoleDevice>) -> Arc<Self> {
+    pub fn new(buffer_size: usize, dev: &Arc<dyn ConsoleDevice>) -> Arc<Self> {
         let this = Arc::new(Self {
-            inner: Mutex::new(Inner::new(capacity)),
+            inner: Mutex::new(Inner::new(buffer_size)),
             dev: dev.clone(),
         });
 
@@ -220,6 +207,15 @@ impl ConsoleBackend {
         ReadOnlyClientHandle { id, backend: self.clone() }
     }
 
+    pub fn history_vec(
+        &self,
+        byte_offset: SerialHistoryOffset,
+        max_bytes: Option<usize>,
+    ) -> Result<(Vec<u8>, usize), super::history_buffer::Error> {
+        let inner = self.inner.lock().unwrap();
+        inner.buffer.contents_vec(byte_offset, max_bytes)
+    }
+
     /// Invoked in response to a read-ready notification from the backend's
     /// associated device.
     fn notify_read(&self, source: &dyn Source) {
@@ -266,7 +262,7 @@ impl ConsoleBackend {
         }
 
         let mut inner = self.inner.lock().unwrap();
-        inner.push_byte(c);
+        inner.buffer.consume(&[c]);
         if rw_dead {
             inner.rw_client = None;
         }

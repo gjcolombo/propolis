@@ -9,7 +9,6 @@
 //! HTTP error codes) before sending operations to the VM state machine for
 //! processing.
 
-use std::convert::TryFrom;
 use std::net::IpAddr;
 use std::net::Ipv6Addr;
 use std::net::SocketAddr;
@@ -20,7 +19,6 @@ use std::sync::Arc;
 use crate::migrate::destination::MigrationTargetInfo;
 use crate::vm::ensure::VmInitializationMethod;
 use crate::{
-    serial::history_buffer::SerialHistoryOffset,
     vm::{ensure::VmEnsureRequest, VmError},
     vnc::{self, VncServer},
 };
@@ -30,10 +28,12 @@ use dropshot::{
     HttpResponseOk, HttpResponseUpdatedNoContent, Path, Query, RequestContext,
     TypedBody, WebsocketConnection,
 };
+use futures::SinkExt;
 use internal_dns::resolver::{ResolveError, Resolver};
 use internal_dns::ServiceName;
 pub use nexus_client::Client as NexusClient;
 use oximeter::types::ProducerRegistry;
+use propolis::chardev::history_buffer::SerialHistoryOffset;
 use propolis_api_types as api;
 use propolis_api_types::instance_spec::SpecKey;
 use propolis_api_types::InstanceInitializationMethod;
@@ -393,18 +393,25 @@ async fn instance_serial_history_get(
     let serial = vm.objects().lock_shared().await.com1().clone();
     let query_params = query.into_inner();
 
-    let byte_offset = SerialHistoryOffset::try_from(&query_params)?;
+    let byte_offset = match (query_params.from_start, query_params.most_recent)
+    {
+        (Some(n), None) => SerialHistoryOffset::FromStart(n as usize),
+        (None, Some(n)) => SerialHistoryOffset::MostRecent(n as usize),
+        _ => return Err(HttpError::for_bad_request(
+            None,
+            "Exactly one of 'from_start' or 'most_recent' must be specified"
+                .to_string(),
+        )),
+    };
 
     let max_bytes = query_params.max_bytes.map(|x| x as usize);
-    /* TODO(gjc) restore history
     let (data, end) = serial
         .history_vec(byte_offset, max_bytes)
-        .await
-        .map_err(|e| HttpError::for_bad_request(None, e.to_string()))?; */
+        .map_err(|e| HttpError::for_bad_request(None, e.to_string()))?;
 
     Ok(HttpResponseOk(api::InstanceSerialConsoleHistoryResponse {
-        data: vec![],
-        last_byte_offset: 0,
+        data,
+        last_byte_offset: end as u64,
     }))
 }
 
@@ -421,6 +428,18 @@ async fn instance_serial(
     let vm = ctx.vm.active_vm().await.ok_or_else(not_created_error)?;
     let query = query.into_inner();
 
+    let mut byte_offset = match (query.from_start, query.most_recent) {
+        (Some(n), None) => SerialHistoryOffset::FromStart(n as usize),
+        (None, Some(n)) => SerialHistoryOffset::MostRecent(n as usize),
+        _ => {
+            return Err(anyhow::anyhow!(
+            "Exactly one of 'from_start' or 'most_recent' must be specified"
+                .to_string(),
+        )
+            .into())
+        }
+    };
+
     // Use the default buffering paramters for the websocket configuration
     //
     // Because messages are written with [`StreamExt::send`], the buffer on the
@@ -429,28 +448,24 @@ async fn instance_serial(
     // bound.
     let config = WebSocketConfig::default();
 
-    let ws_stream = WebSocketStream::from_raw_socket(
+    let mut ws_stream = WebSocketStream::from_raw_socket(
         websock.into_inner(),
         Role::Server,
         Some(config),
     )
     .await;
 
-    /* TODO(gjc) restore history management
-    let byte_offset = SerialHistoryOffset::try_from(&query.into_inner()).ok();
-    if let Some(mut byte_offset) = byte_offset {
-        loop {
-            let (data, offset) = serial.history_vec(byte_offset, None).await?;
-            if data.is_empty() {
-                break;
-            }
-            ws_stream
-                .send(tokio_tungstenite::tungstenite::Message::Binary(data))
-                .await?;
-            byte_offset = SerialHistoryOffset::FromStart(offset);
+    let serial = vm.objects().lock_shared().await.com1().clone();
+    loop {
+        let (data, offset) = serial.history_vec(byte_offset, None)?;
+        if data.is_empty() {
+            break;
         }
+        ws_stream
+            .send(tokio_tungstenite::tungstenite::Message::Binary(data))
+            .await?;
+        byte_offset = SerialHistoryOffset::FromStart(offset);
     }
-    */
 
     let serial_mgr = vm.services().serial_mgr.lock().await;
     let readonly = if query.readonly {

@@ -401,8 +401,8 @@ impl<'a> MachineInitializer<'a> {
             }
         }
 
-        // TODO(gjc) figure out how to reintroduce the source/sink pollers here
-        ConsoleBackend::new(1024, &com1.unwrap())
+        const CONSOLE_BUFFER_BYTES: usize = 1024 * 1024;
+        ConsoleBackend::new(CONSOLE_BUFFER_BYTES, &com1.unwrap())
     }
 
     pub fn initialize_ps2(

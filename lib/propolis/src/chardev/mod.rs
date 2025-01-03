@@ -10,6 +10,7 @@ use std::sync::Mutex;
 
 pub mod console;
 mod file_out;
+pub mod history_buffer;
 pub mod pollers;
 mod sock;
 
