@@ -189,6 +189,7 @@ impl SerialConsoleManager {
     }
 
     pub(crate) async fn notify_migration(&self, destination: SocketAddr) {
+        let from_start = self.backend.bytes_since_start() as u64;
         let entries: Vec<_> = {
             let clients = self.client_tasks.lock().unwrap();
             clients
@@ -203,7 +204,7 @@ impl SerialConsoleManager {
                 .0
                 .send(InstanceSerialConsoleControlMessage::Migrating {
                     destination,
-                    from_start: 0,
+                    from_start,
                     readonly: entry.1,
                 })
                 .await;

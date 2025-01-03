@@ -53,8 +53,8 @@ impl HistoryBuffer {
         HistoryBuffer {
             beginning: Vec::with_capacity(buffer_size),
             rolling: VecDeque::with_capacity(buffer_size),
-            buffer_size,
             total_bytes: 0,
+            buffer_size,
         }
     }
 
@@ -169,8 +169,48 @@ impl HistoryBuffer {
     }
 
     /// Returns the number of bytes output since instance boot.
-    pub fn bytes_from_start(&self) -> usize {
+    pub(crate) fn bytes_from_start(&self) -> usize {
         self.total_bytes
+    }
+
+    pub(super) fn export(&self) -> migrate::ConsoleHistoryBufferV1 {
+        let slices = self.rolling.as_slices();
+        let mut most_recent = Vec::with_capacity(self.rolling.len());
+        most_recent.extend_from_slice(slices.0);
+        most_recent.extend_from_slice(slices.1);
+        migrate::ConsoleHistoryBufferV1 {
+            beginning: self.beginning.clone(),
+            most_recent,
+            bytes_since_start: self.total_bytes,
+            buffer_size: self.buffer_size,
+        }
+    }
+
+    pub(super) fn import(&mut self, payload: migrate::ConsoleHistoryBufferV1) {
+        self.beginning = payload.beginning;
+        self.rolling = payload.most_recent.into();
+        self.total_bytes = payload.bytes_since_start;
+        self.buffer_size = payload.buffer_size;
+    }
+}
+
+pub(super) mod migrate {
+    use serde::{Deserialize, Serialize};
+
+    use crate::migrate::{Schema, SchemaId};
+
+    #[derive(Debug, Serialize, Deserialize)]
+    pub struct ConsoleHistoryBufferV1 {
+        pub beginning: Vec<u8>,
+        pub most_recent: Vec<u8>,
+        pub bytes_since_start: usize,
+        pub buffer_size: usize,
+    }
+
+    impl Schema<'_> for ConsoleHistoryBufferV1 {
+        fn id() -> SchemaId {
+            ("console-history-buffer", 1)
+        }
     }
 }
 

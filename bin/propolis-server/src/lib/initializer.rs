@@ -402,7 +402,13 @@ impl<'a> MachineInitializer<'a> {
         }
 
         const CONSOLE_BUFFER_BYTES: usize = 1024 * 1024;
-        ConsoleBackend::new(CONSOLE_BUFFER_BYTES, &com1.unwrap())
+        let be = ConsoleBackend::new(CONSOLE_BUFFER_BYTES, &com1.unwrap());
+
+        // TODO(gjc) wire backends into instance specs somehow
+        self.devices
+            .insert(SpecKey::Name("com1-backend".to_string()), be.clone());
+
+        be
     }
 
     pub fn initialize_ps2(

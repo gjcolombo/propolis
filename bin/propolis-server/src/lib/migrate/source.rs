@@ -789,23 +789,14 @@ impl<'vm, T: MigrateConn> RonV0Runner<'vm, T> {
             _ => return Err(MigrateError::UnexpectedMessage),
         };
 
-        /* TODO(gjc) restore history management
-        let com1_history = self
-            .vm
-            .lock_shared()
-            .await
-            .com1()
-            .export_history(remote_addr)
-            .await?; */
-
-        let mgr = self.vm_services.serial_mgr.lock().await;
-        if let Some(mgr) = mgr.as_ref() {
-            mgr.notify_migration(remote_addr).await;
+        {
+            let mgr = self.vm_services.serial_mgr.lock().await;
+            if let Some(mgr) = mgr.as_ref() {
+                mgr.notify_migration(remote_addr).await;
+            }
         }
 
-        let com1_history = "".to_string();
-        self.send_msg(codec::Message::Serialized(com1_history)).await?;
-        self.read_ok().await
+        self.send_msg(codec::Message::Okay).await
     }
 
     async fn finish(&mut self) -> Result<(), MigrateError> {

@@ -34,8 +34,17 @@ use std::{
 
 use tokio::{io::AsyncWrite, sync::mpsc};
 
+use crate::{
+    common::Lifecycle,
+    migrate::{
+        MigrateCtx, MigrateSingle, MigrateStateError, Migrator, PayloadOutput,
+    },
+};
+
 use super::{
-    history_buffer::{HistoryBuffer, SerialHistoryOffset},
+    history_buffer::{
+        migrate::ConsoleHistoryBufferV1, HistoryBuffer, SerialHistoryOffset,
+    },
     Sink, Source,
 };
 
@@ -216,6 +225,10 @@ impl ConsoleBackend {
         inner.buffer.contents_vec(byte_offset, max_bytes)
     }
 
+    pub fn bytes_since_start(&self) -> usize {
+        self.inner.lock().unwrap().buffer.bytes_from_start()
+    }
+
     /// Invoked in response to a read-ready notification from the backend's
     /// associated device.
     fn notify_read(&self, source: &dyn Source) {
@@ -340,5 +353,36 @@ impl AsyncWrite for ReadWriteClientHandle {
         _cx: &mut std::task::Context<'_>,
     ) -> Poll<Result<(), std::io::Error>> {
         Poll::Ready(Ok(()))
+    }
+}
+
+impl Lifecycle for ConsoleBackend {
+    fn type_name(&self) -> &'static str {
+        "console"
+    }
+
+    fn migrate(&self) -> Migrator {
+        Migrator::Single(self)
+    }
+
+    // TODO(gjc) think about how to handle pause...
+}
+
+impl MigrateSingle for ConsoleBackend {
+    fn export(
+        &self,
+        _ctx: &MigrateCtx,
+    ) -> Result<PayloadOutput, MigrateStateError> {
+        Ok(self.inner.lock().unwrap().buffer.export().into())
+    }
+
+    fn import(
+        &self,
+        mut offer: crate::migrate::PayloadOffer,
+        _ctx: &MigrateCtx,
+    ) -> Result<(), MigrateStateError> {
+        let data: ConsoleHistoryBufferV1 = offer.parse()?;
+        self.inner.lock().unwrap().buffer.import(data);
+        Ok(())
     }
 }
