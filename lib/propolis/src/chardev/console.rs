@@ -216,6 +216,14 @@ impl ConsoleBackend {
         ReadOnlyClientHandle { id, backend: self.clone() }
     }
 
+    /// Obtains a history of bytes sent to this console session, starting at
+    /// `byte_offset` and returning up to `max_bytes` (if specified).
+    ///
+    /// # Return value
+    ///
+    /// A tuple whose first element is a vector of bytes and whose second
+    /// element is the number of bytes that were recorded from instance start up
+    /// to and including the last byte in the output vector.
     pub fn history_vec(
         &self,
         byte_offset: SerialHistoryOffset,
@@ -225,6 +233,8 @@ impl ConsoleBackend {
         inner.buffer.contents_vec(byte_offset, max_bytes)
     }
 
+    /// Yields the number of bytes recorded to this console since it was
+    /// started.
     pub fn bytes_since_start(&self) -> usize {
         self.inner.lock().unwrap().buffer.bytes_from_start()
     }
@@ -243,7 +253,10 @@ impl ConsoleBackend {
         };
 
         // Take the lock and capture all listeners for this byte, then drop the
-        // lock before actually dispatching the byte to anyone.
+        // lock before actually dispatching the byte to anyone. It's not safe to
+        // hold the lock while sending blocking sends to the read-write client,
+        // because it might simultaneously be issuing a write that needs to take
+        // the lock.
         let (rw_tx, mut ro_clients) = {
             let inner = self.inner.lock().unwrap();
             let rw_tx = inner.rw_client.as_ref().map(|c| c.tx.clone());
@@ -259,21 +272,15 @@ impl ConsoleBackend {
             (rw_tx, ro_clients)
         };
 
-        // It's not safe to hold the lock while issuing a blocking send to the
-        // read-write client, because that client might simultaneously be
-        // issuing a write that needs to take the lock.
-        let rw_dead = if let Some(rw_tx) = rw_tx {
-            rw_tx.blocking_send(c).is_err()
-        } else {
-            false
-        };
-
+        let rw_dead = rw_tx.map_or(false, |tx| tx.blocking_send(c).is_err());
         for client in ro_clients.iter_mut() {
             if client.tx.try_send(c).is_err() {
                 client.dead = true;
             }
         }
 
+        // Retake the lock and drop any clients that have closed their channels
+        // or that weren't able to accept the new byte.
         let mut inner = self.inner.lock().unwrap();
         inner.buffer.consume(&[c]);
         if rw_dead {
@@ -364,8 +371,6 @@ impl Lifecycle for ConsoleBackend {
     fn migrate(&self) -> Migrator {
         Migrator::Single(self)
     }
-
-    // TODO(gjc) think about how to handle pause...
 }
 
 impl MigrateSingle for ConsoleBackend {
