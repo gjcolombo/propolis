@@ -85,17 +85,9 @@ pub(crate) struct SerialConsoleManager {
     /// The backend to which this manager's tasks connect.
     backend: Arc<ConsoleBackend>,
 
-    /// A handle to the supervisor task for this manager. This task cleans up
-    /// client connection tasks as they complete.
-    supervisor_task: JoinHandle<()>,
-
     /// The set of client tasks this manager knows about. This is shared with
     /// the supervisor task, which reaps tasks as they exit.
     client_tasks: Arc<Mutex<ClientTasks>>,
-
-    /// Exiting clients send their IDs to this channel to tell the supervisor to
-    /// clean up their handles.
-    client_done_tx: mpsc::Sender<ClientId>,
 
     /// Setting this to `true` signals to all tasks that they should terminate.
     done_tx: watch::Sender<bool>,
@@ -108,36 +100,20 @@ pub(crate) struct SerialConsoleManager {
 impl SerialConsoleManager {
     pub(crate) fn new(log: slog::Logger, backend: Arc<ConsoleBackend>) -> Self {
         let client_tasks = Arc::new(Mutex::new(ClientTasks::default()));
-        let (client_done_tx, client_done_rx) = mpsc::channel(1);
         let (done_tx, done_rx) = watch::channel(false);
 
-        let log_for_supervisor = log.clone();
-        let client_for_supervisor = client_tasks.clone();
-        let done_for_supervisor = done_rx.clone();
-        let supervisor_task = tokio::spawn(async move {
-            supervisor_task(
-                log_for_supervisor,
-                done_for_supervisor,
-                client_for_supervisor,
-                client_done_rx,
-            )
-            .await;
-        });
-
-        Self {
-            log,
-            backend,
-            supervisor_task,
-            client_tasks,
-            client_done_tx,
-            done_tx,
-            done_rx,
-        }
+        Self { log, backend, client_tasks, done_tx, done_rx }
     }
 
     pub(crate) async fn finish(self) {
         self.done_tx.send(true).expect("manager owns a copy of done_rx");
-        let _ = self.supervisor_task.await;
+        let tasks = {
+            let mut guard = self.client_tasks.lock().unwrap();
+            std::mem::take(&mut guard.tasks)
+        };
+
+        let tasks: Vec<_> = tasks.into_values().collect();
+        futures::future::join_all(tasks.into_iter().map(|task| task.hdl)).await;
     }
 
     pub(crate) fn connect(
@@ -175,7 +151,7 @@ impl SerialConsoleManager {
             console_rx,
             control_rx,
             done_rx: self.done_rx.clone(),
-            client_done_tx: self.client_done_tx.clone(),
+            client_tasks: self.client_tasks.clone(),
             client_id,
         };
 
@@ -212,59 +188,6 @@ impl SerialConsoleManager {
     }
 }
 
-async fn supervisor_task(
-    log: slog::Logger,
-    mut done_rx: watch::Receiver<bool>,
-    client_tasks: Arc<Mutex<ClientTasks>>,
-    mut client_done_rx: mpsc::Receiver<ClientId>,
-) {
-    enum Event {
-        Done,
-        ClientDone(ClientId),
-    }
-    loop {
-        let event = select! {
-            biased;
-
-            _ = done_rx.changed() => {
-                Event::Done
-            }
-
-            client_done = client_done_rx.recv() => {
-                Event::ClientDone(
-                    client_done.expect("child_done_tx owned by manager")
-                )
-            }
-        };
-
-        match event {
-            Event::Done => {
-                info!(log, "serial console supervisor task shutting down");
-                let tasks = {
-                    let mut guard = client_tasks.lock().unwrap();
-                    std::mem::take(&mut guard.tasks)
-                };
-
-                let tasks: Vec<_> = tasks.into_values().collect();
-                futures::future::join_all(
-                    tasks.into_iter().map(|task| task.hdl),
-                )
-                .await;
-                break;
-            }
-
-            Event::ClientDone(id) => {
-                let task =
-                    client_tasks.lock().unwrap().tasks.remove(&id).expect(
-                        "clients must be registered when they complete",
-                    );
-
-                let _ = task.hdl.await;
-            }
-        }
-    }
-}
-
 struct SerialTaskContext {
     log: slog::Logger,
     ws: WebSocketStream<WebsocketConnectionRaw>,
@@ -272,7 +195,7 @@ struct SerialTaskContext {
     console_rx: mpsc::Receiver<u8>,
     control_rx: mpsc::Receiver<InstanceSerialConsoleControlMessage>,
     done_rx: watch::Receiver<bool>,
-    client_done_tx: mpsc::Sender<ClientId>,
+    client_tasks: Arc<Mutex<ClientTasks>>,
     client_id: ClientId,
 }
 
@@ -284,7 +207,7 @@ async fn serial_task(
         mut console_rx,
         mut control_rx,
         mut done_rx,
-        client_done_tx,
+        client_tasks,
         client_id,
     }: SerialTaskContext,
 ) {
@@ -505,7 +428,7 @@ async fn serial_task(
         close(&log, client_id, sink, stream, close_reason).await;
     }
 
-    let _ = client_done_tx.send(client_id).await;
+    client_tasks.lock().unwrap().tasks.remove(&client_id);
 }
 
 /// Attempts to write `bytes` to the console backend via the supplied read-write
