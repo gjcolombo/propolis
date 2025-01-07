@@ -58,17 +58,11 @@ const READ_BUFFER_SIZE_BYTES: usize = 512;
 
 /// A device acting as a console must be a character source and sink.
 pub trait ConsoleDevice: Source + Sink {
-    /// Upcasts the console device to a reference to a `Source`.
-    fn upcast_source(&self) -> &dyn Source;
-
     /// Upcasts an `Arc<ConsoleDevice>` to an `Arc<Source>`.
-    fn upcast_arc_source(self: Arc<Self>) -> Arc<dyn Source>;
-
-    /// Upcasts the console device to a reference to a `Sink`.
-    fn upcast_sink(&self) -> &dyn Sink;
+    fn upcast_source(self: Arc<Self>) -> Arc<dyn Source>;
 
     /// Upcasts an `Arc<ConsoleDevice>` to an `Arc<Sink>`.
-    fn upcast_arc_sink(self: Arc<Self>) -> Arc<dyn Sink>;
+    fn upcast_sink(self: Arc<Self>) -> Arc<dyn Sink>;
 }
 
 /// Represents a read-only client connection to the console.
@@ -168,20 +162,23 @@ impl Inner {
 pub struct ConsoleBackend {
     inner: Mutex<Inner>,
     dev: Arc<dyn ConsoleDevice>,
+    sink: Arc<dyn Sink>,
     sink_buffer: Arc<SinkBuffer>,
     done_tx: oneshot::Sender<()>,
 }
 
 impl ConsoleBackend {
     pub fn new(buffer_size: usize, dev: &Arc<dyn ConsoleDevice>) -> Arc<Self> {
-        let sink = SinkBuffer::new(NonZeroUsize::new(64).unwrap());
-        sink.attach(dev.clone().upcast_arc_sink().as_ref());
+        let sink = dev.clone().upcast_sink();
+        let sink_buffer = SinkBuffer::new(NonZeroUsize::new(64).unwrap());
+        sink_buffer.attach(sink.as_ref());
 
         let (done_tx, done_rx) = oneshot::channel();
         let this = Arc::new(Self {
             inner: Mutex::new(Inner::new(buffer_size)),
             dev: dev.clone(),
-            sink_buffer: sink,
+            sink,
+            sink_buffer,
             done_tx,
         });
 
@@ -257,18 +254,20 @@ impl Drop for ConsoleBackend {
     }
 }
 
+/// Dispatches bytes read from a [`Source`] to the clients connected to a
+/// [`ConsoleBackend`].
 async fn read_dispatcher(
     backend: Arc<ConsoleBackend>,
     mut done_rx: oneshot::Receiver<()>,
 ) {
+    let source = backend.dev.clone().upcast_source();
     let buf = SourceBuffer::new(SourceBufferParams {
         poll_interval: POLL_INTERVAL,
         poll_miss_thresh: POLL_MISS_THRESHOLD,
         buf_size: NonZeroUsize::new(READ_BUFFER_SIZE_BYTES).unwrap(),
     });
-    buf.attach(backend.dev.clone().upcast_arc_source().as_ref());
+    buf.attach(source.as_ref());
 
-    let dev = backend.dev.as_ref().upcast_source();
     let mut bytes = vec![0u8; READ_BUFFER_SIZE_BYTES];
     loop {
         let bytes_read = select! {
@@ -278,7 +277,7 @@ async fn read_dispatcher(
                 return;
             }
 
-            res = buf.read(bytes.as_mut_slice(), dev) => {
+            res = buf.read(bytes.as_mut_slice(), source.as_ref()) => {
                 res.unwrap()
             }
         };
@@ -372,7 +371,7 @@ impl ReadWriteClientHandle {
         Ok(self
             .backend
             .sink_buffer
-            .write(buf, self.backend.dev.upcast_sink())
+            .write(buf, self.backend.sink.as_ref())
             .await
             .unwrap())
     }
