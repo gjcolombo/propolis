@@ -121,15 +121,8 @@ impl SerialConsoleManager {
         ws: WebSocketStream<WebsocketConnectionRaw>,
         readonly: ReadOnly,
     ) {
-        // Read-only clients disconnect if they aren't able to keep up with
-        // incoming bytes from the guest. Create a slightly larger channel for
-        // them to allow some buffering of incoming guest bytes.
-        let ch_size = match readonly {
-            ReadOnly::ReadWrite => 1,
-            ReadOnly::ReadOnly => 256,
-        };
-
-        let (console_tx, console_rx) = mpsc::channel(ch_size);
+        const SERIAL_CHANNEL_SIZE: usize = 256;
+        let (console_tx, console_rx) = mpsc::channel(SERIAL_CHANNEL_SIZE);
         let console_client = match readonly {
             ReadOnly::ReadWrite => ConsoleClient::ReadWrite(
                 self.backend.attach_rw_client(console_tx),
