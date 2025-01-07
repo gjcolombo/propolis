@@ -198,6 +198,14 @@ impl MigrateSingle for LpcUart {
 }
 
 impl ConsoleDevice for LpcUart {
+    fn upcast_arc_source(self: Arc<Self>) -> Arc<dyn Source> {
+        self
+    }
+
+    fn upcast_source(&self) -> &dyn Source {
+        self
+    }
+
     fn upcast_arc_sink(self: Arc<Self>) -> Arc<dyn Sink> {
         self
     }

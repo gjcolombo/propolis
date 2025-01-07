@@ -31,14 +31,17 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-use tokio::sync::mpsc;
+use tokio::{
+    select,
+    sync::{mpsc, oneshot},
+};
 
 use crate::{
     chardev::{
         history_buffer::{
             migrate::ConsoleHistoryBufferV1, HistoryBuffer, SerialHistoryOffset,
         },
-        pollers::SinkBuffer,
+        pollers::{SinkBuffer, SourceBuffer, SourceBufferParams},
         Sink, Source,
     },
     common::Lifecycle,
@@ -49,8 +52,18 @@ use crate::{
 
 type ClientId = u64;
 
+const POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(10);
+const POLL_MISS_THRESHOLD: usize = 5;
+const READ_BUFFER_SIZE_BYTES: usize = 512;
+
 /// A device acting as a console must be a character source and sink.
 pub trait ConsoleDevice: Source + Sink {
+    /// Upcasts the console device to a reference to a `Source`.
+    fn upcast_source(&self) -> &dyn Source;
+
+    /// Upcasts an `Arc<ConsoleDevice>` to an `Arc<Source>`.
+    fn upcast_arc_source(self: Arc<Self>) -> Arc<dyn Source>;
+
     /// Upcasts the console device to a reference to a `Sink`.
     fn upcast_sink(&self) -> &dyn Sink;
 
@@ -156,6 +169,7 @@ pub struct ConsoleBackend {
     inner: Mutex<Inner>,
     dev: Arc<dyn ConsoleDevice>,
     sink_buffer: Arc<SinkBuffer>,
+    done_tx: oneshot::Sender<()>,
 }
 
 impl ConsoleBackend {
@@ -163,18 +177,17 @@ impl ConsoleBackend {
         let sink = SinkBuffer::new(NonZeroUsize::new(64).unwrap());
         sink.attach(dev.clone().upcast_arc_sink().as_ref());
 
+        let (done_tx, done_rx) = oneshot::channel();
         let this = Arc::new(Self {
             inner: Mutex::new(Inner::new(buffer_size)),
             dev: dev.clone(),
             sink_buffer: sink,
+            done_tx,
         });
 
-        let read_notifier = this.clone();
-        dev.set_autodiscard(false);
-        Source::set_notifier(
-            dev.as_ref(),
-            Some(Box::new(move |s| read_notifier.notify_read(s))),
-        );
+        let for_reader = this.clone();
+        tokio::spawn(async move { read_dispatcher(for_reader, done_rx).await });
+
         this
     }
 
@@ -234,27 +247,57 @@ impl ConsoleBackend {
     pub fn bytes_since_start(&self) -> usize {
         self.inner.lock().unwrap().buffer.bytes_from_start()
     }
+}
 
-    /// Invoked in response to a read-ready notification from the backend's
-    /// associated device.
-    fn notify_read(&self, source: &dyn Source) {
+impl Drop for ConsoleBackend {
+    fn drop(&mut self) {
+        let (tx, _rx) = oneshot::channel();
+        let done_tx = std::mem::replace(&mut self.done_tx, tx);
+        let _ = done_tx.send(());
+    }
+}
+
+async fn read_dispatcher(
+    backend: Arc<ConsoleBackend>,
+    mut done_rx: oneshot::Receiver<()>,
+) {
+    let buf = SourceBuffer::new(SourceBufferParams {
+        poll_interval: POLL_INTERVAL,
+        poll_miss_thresh: POLL_MISS_THRESHOLD,
+        buf_size: NonZeroUsize::new(READ_BUFFER_SIZE_BYTES).unwrap(),
+    });
+    buf.attach(backend.dev.clone().upcast_arc_source().as_ref());
+
+    let dev = backend.dev.as_ref().upcast_source();
+    let mut bytes = vec![0u8; READ_BUFFER_SIZE_BYTES];
+    loop {
+        let bytes_read = select! {
+            biased;
+
+            _ = &mut done_rx => {
+                return;
+            }
+
+            res = buf.read(bytes.as_mut_slice(), dev) => {
+                res.unwrap()
+            }
+        };
+
+        let to_send = &bytes[0..bytes_read];
+
+        // Dispatch the bytes that were read to all currently-connected clients.
+        // Drop the lock before actually dispatching anything: the read-write
+        // client gets to use blocking sends, and it's not safe to hold the lock
+        // while blocking on its channel, because the listener might be trying
+        // to take the lock in order to write something.
         struct RoClient {
             id: ClientId,
             tx: mpsc::Sender<u8>,
             dead: bool,
         }
 
-        let Some(c) = source.read() else {
-            return;
-        };
-
-        // Take the lock and capture all listeners for this byte, then drop the
-        // lock before actually dispatching the byte to anyone. It's not safe to
-        // hold the lock while sending blocking sends to the read-write client,
-        // because it might simultaneously be issuing a write that needs to take
-        // the lock.
-        let (rw_tx, mut ro_clients) = {
-            let inner = self.inner.lock().unwrap();
+        let (mut rw_tx, mut ro_clients) = {
+            let inner = backend.inner.lock().unwrap();
             let rw_tx = inner.rw_client.as_ref().map(|c| c.tx.clone());
             let ro_clients = inner
                 .ro_clients
@@ -268,22 +311,28 @@ impl ConsoleBackend {
             (rw_tx, ro_clients)
         };
 
-        let rw_dead = rw_tx.map_or(false, |tx| tx.blocking_send(c).is_err());
-        for client in ro_clients.iter_mut() {
-            if client.tx.try_send(c).is_err() {
-                client.dead = true;
+        for b in to_send {
+            if let Some(tx) = &rw_tx {
+                if tx.send(*b).await.is_err() {
+                    rw_tx = None;
+                }
+            }
+
+            for client in ro_clients.iter_mut() {
+                if client.tx.try_send(*b).is_err() {
+                    client.dead = true;
+                }
             }
         }
 
-        // Retake the lock and drop any clients that have closed their channels
-        // or that weren't able to accept the new byte.
-        let mut inner = self.inner.lock().unwrap();
-        inner.buffer.consume(&[c]);
-        if rw_dead {
+        // Retire any clients for which sending a byte failed.
+        let mut inner = backend.inner.lock().unwrap();
+        inner.buffer.consume(bytes.as_slice());
+        if rw_tx.is_none() {
             inner.rw_client = None;
         }
 
-        for client in ro_clients.iter().filter(|client| client.dead) {
+        for client in ro_clients.iter().filter(|c| c.dead) {
             inner.ro_clients.remove(&client.id);
         }
     }
