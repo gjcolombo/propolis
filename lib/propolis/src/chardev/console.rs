@@ -27,34 +27,34 @@
 
 use std::{
     collections::BTreeMap,
-    future::Future,
     num::NonZeroUsize,
-    pin::Pin,
     sync::{Arc, Mutex},
-    task::Poll,
 };
 
-use tokio::{io::AsyncWrite, sync::mpsc};
+use tokio::sync::mpsc;
 
 use crate::{
+    chardev::{
+        history_buffer::{
+            migrate::ConsoleHistoryBufferV1, HistoryBuffer, SerialHistoryOffset,
+        },
+        pollers::SinkBuffer,
+        Sink, Source,
+    },
     common::Lifecycle,
     migrate::{
         MigrateCtx, MigrateSingle, MigrateStateError, Migrator, PayloadOutput,
     },
 };
 
-use super::{
-    history_buffer::{
-        migrate::ConsoleHistoryBufferV1, HistoryBuffer, SerialHistoryOffset,
-    },
-    pollers::SinkBuffer,
-    Sink, Source,
-};
-
 type ClientId = u64;
 
+/// A device acting as a console must be a character source and sink.
 pub trait ConsoleDevice: Source + Sink {
+    /// Upcasts the console device to a reference to a `Sink`.
     fn upcast_sink(&self) -> &dyn Sink;
+
+    /// Upcasts an `Arc<ConsoleDevice>` to an `Arc<Sink>`.
     fn upcast_arc_sink(self: Arc<Self>) -> Arc<dyn Sink>;
 }
 
@@ -155,7 +155,7 @@ impl Inner {
 pub struct ConsoleBackend {
     inner: Mutex<Inner>,
     dev: Arc<dyn ConsoleDevice>,
-    sink: Arc<SinkBuffer>,
+    sink_buffer: Arc<SinkBuffer>,
 }
 
 impl ConsoleBackend {
@@ -166,7 +166,7 @@ impl ConsoleBackend {
         let this = Arc::new(Self {
             inner: Mutex::new(Inner::new(buffer_size)),
             dev: dev.clone(),
-            sink,
+            sink_buffer: sink,
         });
 
         let read_notifier = this.clone();
@@ -180,11 +180,9 @@ impl ConsoleBackend {
 
     /// Attaches a new read-write client to this console backend.
     ///
-    /// The `tx` argument supplies a channel to which the backend should send
-    /// bytes as they arrive from the backend's associated console device. If a
-    /// byte arrives from the device and `tx` is full, device processing will
-    /// block until the byte can be sent or the receiver half of the channel is
-    /// dropped.
+    /// Bytes arriving from the guest will be written to `tx`. If this channel
+    /// is full, the backend will block until all bytes can be sent or the
+    /// receiver half of the channel is dropped.
     ///
     /// If the backend already has a client, it is replaced with the new client,
     /// and the previous client and its transmission channel are dropped.
@@ -201,11 +199,9 @@ impl ConsoleBackend {
 
     /// Attaches a new read-only client to this console backend.
     ///
-    /// The `tx` argument supplied a channel to which the backend should try to
-    /// send bytes as they arrive from the backend's associated console device.
-    /// If a byte arrives from the device and `tx` is full, this client is
-    /// disconnected from the backend and its `tx` channel is dropped. Callers
-    /// should size their transmission buffers to avoid this if necessary.
+    /// Bytes arriving from the guest will be written to `tx`. If this channel
+    /// is full, this client is removed from the backend's client list and its
+    /// channel is dropped, disconnecting the client.
     pub fn attach_ro_client(
         self: &Arc<Self>,
         tx: mpsc::Sender<u8>,
@@ -293,54 +289,43 @@ impl ConsoleBackend {
     }
 }
 
-impl AsyncWrite for ReadWriteClientHandle {
-    /// Attempts to write bytes from `buf` into the console to which this client
-    /// is connected. Returns an error if this client is no longer the active
-    /// read-write client for this console.
+impl ReadWriteClientHandle {
+    /// Writes bytes from `buf` to the console.
+    ///
+    /// # Return value
+    ///
+    /// - On success, returns the number of bytes written.
+    /// - On failure, returns [`std::io::ErrorKind::ConnectionAborted`] to
+    ///   indicate that the caller is no longer the read-write client for this
+    ///   console.
     ///
     /// # Cancel safety
     ///
-    /// This routine is cancel-safe: if it returns `Pending` and the
-    /// corresponding future is dropped, it is guaranteed that no bytes of `buf`
-    /// were ever written to the console device.
-    fn poll_write(
-        self: Pin<&mut Self>,
-        cx: &mut std::task::Context<'_>,
-        buf: &[u8],
-    ) -> Poll<Result<usize, std::io::Error>> {
+    /// The future returned by this function is cancel-safe: if it is dropped
+    /// before completion, it is guaranteed that no data was written to the
+    /// console. See [`SinkBuffer::write`].
+    pub async fn write(&mut self, buf: &[u8]) -> Result<usize, std::io::Error> {
         if buf.is_empty() {
-            return Poll::Ready(Ok(0));
+            return Ok(0);
         }
 
+        // Don't accept this write if this client is no longer the active R/W
+        // client (it may not yet have noticed that it was overtaken).
         {
             let mut inner = self.backend.inner.lock().unwrap();
             if inner.rw_client_mut(self.id).is_none() {
-                return Poll::Ready(Err(std::io::Error::from(
+                return Err(std::io::Error::from(
                     std::io::ErrorKind::ConnectionAborted,
-                )));
+                ));
             };
         }
 
-        let fut = core::pin::pin!(self
+        Ok(self
             .backend
-            .sink
-            .write(buf, self.backend.dev.upcast_sink()));
-
-        fut.poll(cx).map(|opt| Ok(opt.unwrap()))
-    }
-
-    fn poll_flush(
-        self: Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> Poll<Result<(), std::io::Error>> {
-        Poll::Ready(Ok(()))
-    }
-
-    fn poll_shutdown(
-        self: Pin<&mut Self>,
-        _cx: &mut std::task::Context<'_>,
-    ) -> Poll<Result<(), std::io::Error>> {
-        Poll::Ready(Ok(()))
+            .sink_buffer
+            .write(buf, self.backend.dev.upcast_sink())
+            .await
+            .unwrap())
     }
 }
 

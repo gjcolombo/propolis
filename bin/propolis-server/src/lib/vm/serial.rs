@@ -21,7 +21,6 @@ use propolis::chardev::console::{
 use propolis_api_types::InstanceSerialConsoleControlMessage;
 use slog::{info, warn};
 use tokio::{
-    io::AsyncWriteExt,
     select,
     sync::{mpsc, watch},
     task::JoinHandle,
@@ -42,7 +41,6 @@ mod probes {
     fn serial_event_ws_recv(len: usize) {}
     fn serial_event_ws_error() {}
     fn serial_event_ws_disconnect() {}
-    fn serial_event_wrote_byte(b: u8) {}
 }
 
 type ClientId = u64;
@@ -208,7 +206,7 @@ async fn serial_task(
         Done,
         ConsoleRead(u8),
         ConsoleDisconnected,
-        WroteToBackend(Result<usize, (std::io::Error, &'static str)>),
+        WroteToBackend(Result<usize, std::io::Error>),
         ControlMessage(InstanceSerialConsoleControlMessage),
         WebsocketMessage(Message),
         WebsocketError(tokio_tungstenite::tungstenite::Error),
@@ -269,13 +267,7 @@ async fn serial_task(
                 // completely drained before any new bytes can be read from the
                 // websocket.
                 remaining_to_send.make_contiguous();
-                (
-                    true,
-                    Either::Left(write_to_backend(
-                        hdl,
-                        remaining_to_send.as_slices().0,
-                    )),
-                )
+                (true, Either::Left(hdl.write(remaining_to_send.as_slices().0)))
             } else {
                 (false, Either::Right(futures::future::pending()))
             };
@@ -370,7 +362,15 @@ async fn serial_task(
             Event::WroteToBackend(result) => {
                 let written = match result {
                     Ok(n) => n,
-                    Err((e, reason)) => {
+                    Err(e) => {
+                        let reason = if e.kind()
+                            == std::io::ErrorKind::ConnectionAborted
+                        {
+                            "read-write console connection overtaken"
+                        } else {
+                            "error writing to console backend"
+                        };
+
                         warn!(
                             log,
                             "dropping read-write console client";
@@ -422,41 +422,4 @@ async fn serial_task(
     }
 
     client_tasks.lock().unwrap().tasks.remove(&client_id);
-}
-
-/// Attempts to write `bytes` to the console backend via the supplied read-write
-/// client handle. Failure to write bytes is presumed to give the caller cause
-/// to disconnect the client.
-///
-/// # Return value
-///
-/// Returns the number of bytes written on success. On failure, returns the I/O
-/// error produced by the handle (for logging purposes) and a friendly
-/// disconnection reason string for the caller to pass back to the websocket
-/// client.
-///
-/// # Cancel safety
-///
-/// The future produced by this function call is cancel-safe: if it is dropped,
-/// it is guaranteed that no bytes were written to the console. See
-/// [`ReadWriteClientHandle`]'s documentation for more details.
-async fn write_to_backend(
-    hdl: &mut ReadWriteClientHandle,
-    bytes: &[u8],
-) -> Result<usize, (std::io::Error, &'static str)> {
-    let written = hdl.write(bytes).await.map_err(|e| {
-        let reason = if e.kind() == std::io::ErrorKind::ConnectionAborted {
-            "read-write console connection overtaken"
-        } else {
-            "error writing to console backend"
-        };
-
-        (e, reason)
-    })?;
-
-    for byte in bytes.iter().take(written) {
-        probes::serial_event_wrote_byte!(|| (byte));
-    }
-
-    Ok(written)
 }
