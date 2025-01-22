@@ -105,8 +105,11 @@ pub struct Board {
     /// The chipset to expose to guest software.
     pub chipset: Chipset,
 
-    /// The CPUID values to expose to the guest. If `None`, bhyve will derive
-    /// default values from the host's CPUID values.
+    /// The CPUID values to expose to the guest.
+    ///
+    /// If `None`, Propolis will query bhyve to determine the default CPUID
+    /// values it would supply in the absence of any explicit CPUID setting and
+    /// will proceed as though those values were specified here.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cpuid: Option<Cpuid>,
     // TODO: Processor and NUMA topology.

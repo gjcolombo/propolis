@@ -456,7 +456,7 @@
           },
           "cpuid": {
             "nullable": true,
-            "description": "The CPUID values to expose to the guest. If `None`, bhyve will derive default values from the host's CPUID values.",
+            "description": "The CPUID values to expose to the guest.\n\nIf `None`, Propolis will query bhyve to determine the default CPUID values it would supply in the absence of any explicit CPUID setting and will proceed as though those values were specified here.",
             "allOf": [
               {
                 "$ref": "#/components/schemas/Cpuid"
