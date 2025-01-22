@@ -193,4 +193,54 @@ bitflags::bitflags! {
             Self::LONG_MODE.bits() | Self::THREED_NOW_EXT.bits() |
             Self::THREED_NOW.bits();
     }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct AmdExtLeaf1DEax: u32 {
+        const NUM_SHARING_CACHE_MASK = (0xFFF << 14);
+        const FULLY_ASSOCIATIVE = 1 << 9;
+        const SELF_INITIALIZATION = 1 << 8;
+        const CACHE_LEVEL_MASK = (0x7 << 5);
+        const CACHE_TYPE_MASK = 0x1F;
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AmdExtLeaf1DCacheType {
+    Null,
+    Data,
+    Instruction,
+    Unified,
+    Reserved,
+}
+
+impl AmdExtLeaf1DCacheType {
+    pub fn is_null(&self) -> bool {
+        matches!(self, Self::Null)
+    }
+}
+
+impl TryFrom<u32> for AmdExtLeaf1DCacheType {
+    type Error = ();
+
+    /// Returns the leaf 0x8000001D cache type corresponding to the supplied
+    /// value, or an error if the supplied value cannot be represented in 5 bits
+    /// (the width of the cache type field in leaf 0x8000001D eax).
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::Null),
+            1 => Ok(Self::Data),
+            2 => Ok(Self::Instruction),
+            3 => Ok(Self::Unified),
+            4..=0x1F => Ok(Self::Reserved),
+            _ => Err(()),
+        }
+    }
+}
+
+impl AmdExtLeaf1DEax {
+    pub fn cache_type(&self) -> AmdExtLeaf1DCacheType {
+        let bits = (*self & Self::CACHE_TYPE_MASK).bits();
+        AmdExtLeaf1DCacheType::try_from(bits)
+            .expect("invalid bits were already masked")
+    }
 }

@@ -60,6 +60,9 @@ use thiserror::Error;
 
 pub mod bits;
 
+#[cfg(feature = "host-gen")]
+pub mod host;
+
 #[cfg(feature = "instance-spec")]
 mod instance_spec;
 
