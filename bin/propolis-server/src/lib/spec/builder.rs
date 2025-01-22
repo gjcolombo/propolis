@@ -6,7 +6,6 @@
 
 use std::collections::{BTreeSet, HashSet};
 
-use cpuid_utils::CpuidMapConversionError;
 use propolis_api_types::instance_spec::{
     components::{
         board::Board as InstanceSpecBoard,
@@ -63,6 +62,9 @@ pub(crate) enum SpecBuilderError {
 
     #[error("instance spec's CPUID entries are invalid")]
     CpuidEntriesInvalid(#[from] cpuid_utils::CpuidMapConversionError),
+
+    #[error("failed to determine host's default CPUID values")]
+    CpuidDefaultsUnavailable(anyhow::Error),
 }
 
 #[derive(Debug, Default)]
@@ -86,13 +88,26 @@ impl SpecBuilder {
                 },
                 cpuid: board
                     .cpuid
-                    .map(|cpuid| -> Result<_, CpuidMapConversionError> {
+                    .map(|cpuid| -> Result<_, SpecBuilderError> {
                         {
                             Ok(cpuid_utils::CpuidSet::from_map(
                                 cpuid.entries.try_into()?,
                                 cpuid.vendor,
-                            )?)
+                            )
+                            .map_err(|e| {
+                                cpuid_utils::CpuidMapConversionError::from(e)
+                            })?)
                         }
+                    })
+                    .or_else(|| {
+                        Some(
+                            cpuid_utils::host::get_bhyve_default_cpuid()
+                                .map_err(|e| {
+                                    SpecBuilderError::CpuidDefaultsUnavailable(
+                                        e,
+                                    )
+                                }),
+                        )
                     })
                     .transpose()?,
                 ..Default::default()
